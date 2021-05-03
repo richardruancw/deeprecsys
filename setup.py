@@ -9,7 +9,8 @@ setup(name='deeprecsys',
             'tqdm',
             'numpy',
             'scipy',
-            'scikit_learn'
+            'scikit_learn',
+            'pyarrow'
       ],
       packages=['deeprecsys'],
       package_data={"deeprecsys": ["py.typed"]})

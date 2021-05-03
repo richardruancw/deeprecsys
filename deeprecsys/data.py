@@ -276,22 +276,18 @@ class NegSequenceData(data.Dataset):
         return len(self.records)
 
     def __getitem__(self, idx):
-        temp_hist = np.zeros(self.max_len, dtype=int) + self.padding_idx
         uidx, pos_item, item_hist =  self.records[idx]
-        assert(len(temp_hist) >= len(item_hist))
-        if len(item_hist) > 0:
-            temp_hist[-len(item_hist):] = item_hist
-
         negitem_list = np.zeros(self.num_neg, dtype=int)
         for idx in range(self.num_neg):
             is_dup = True
+            negitem = None
             while is_dup:
                 negitem = self.prng.randint(self.num_item)
                 is_dup = negitem == pos_item
                 if self.past_hist is not None:
                     is_dup = is_dup or negitem in self.past_hist.get(uidx, [])
             negitem_list[idx] = negitem
-        return uidx, pos_item, negitem_list, temp_hist
+        return uidx, pos_item, negitem_list
 
         
 

@@ -4,7 +4,7 @@ Design note: The module shoudn't care about things like data transformations. It
 as self-contained as possible. Dirty jobs should be done by the Model class which serves
 as a bridge between reality(data) and the theory(module).
 """
-from typing import List, Tuple, Any, Optional
+from typing import List, Tuple, Any, Optional, Dict
 from scipy import sparse as sp  # type: ignore
 import numpy as np  # type: ignore
 import torch  # type: ignore
@@ -272,12 +272,14 @@ class NoiseFactor(nn.Module):
     def get_device(self):
         return self.facotr_model.get_device()
 
+
 class AttentionModel(nn.Module):
     def __init__(
             self,
             user_num: int,
             item_num: int,
             factor_num: int,
+            hist: Dict[int, List[int]],
             max_len: int = 20, 
             num_heads: int = 2, 
             num_layer: int = 2) -> None:
@@ -287,6 +289,9 @@ class AttentionModel(nn.Module):
         self.factor_num = factor_num
         self.padding_idx = self.item_num
         self.max_len = max_len
+
+        self.user_hist_embed = torch.nn.Parameter(torch.from_numpy(self.hist_to_embedding(hist)), requires_grad=False)
+        print(self.user_hist_embed.shape)
         #self.embed_user = nn.Embedding(user_num, factor_num, sparse=True)
         self.embed_item = nn.Embedding(item_num + 1, factor_num, sparse=False, padding_idx=self.padding_idx)
         #self.target_item_embed = nn.Embedding(item_num + 1, factor_num, sparse=False, padding_idx=self.padding_idx)
@@ -295,6 +300,15 @@ class AttentionModel(nn.Module):
         for _ in range(num_layer):
             self.attention_list.append(nn.MultiheadAttention(embed_dim=factor_num, num_heads=num_heads))
         self.output_affine = nn.Linear(factor_num, 1, bias=True)
+
+    def hist_to_embedding(self, user_hist: Dict[int, List[int]]) -> np.ndarray:
+        """Translate user hist hist into padded integer array"""
+        hist_embed = np.zeros((self.user_num, self.max_len), dtype='int') + self.padding_idx
+        for user_idx in range(self.user_num):
+            if user_idx in user_hist and len(user_hist[user_idx]) > 0:
+                true_size = min(self.max_len, len(user_hist[user_idx]))
+                hist_embed[user_idx, -true_size:] = np.asarray(user_hist[user_idx][-true_size:])
+        return hist_embed
     
     def get_device(self):
         return self.embed_item.weight.device
@@ -323,9 +337,11 @@ class AttentionModel(nn.Module):
         attn_item_vec = attn_item_vec.mean(dim=0) #[B, factor_num]
         return attn_item_vec
     
-    def forward(self, items: torch.Tensor, user_hists: torch.Tensor) -> torch.Tensor:
+    def forward(self, users: torch.Tensor, items: torch.Tensor) -> torch.Tensor:
         # items - [B, ord]
         assert(len(items.shape) == 2)
+        assert (items.shape[0] == users.shape[0])
+        user_hists = self.user_hist_embed[users, :] # [B, max_len]
         assert(items.shape[0] == user_hists.shape[0])
 
         affinity_vec = self.seq_vector(user_hists) # [B, dim]
