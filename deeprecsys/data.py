@@ -320,7 +320,7 @@ class LabeledSequenceData(data.Dataset):
         self.records = []
         for uidx, item_record_list in hist.items():
             item_list = [x[0] for x in item_record_list]
-            label_list = [x[1] for x in item_record_list]
+            label_list = [int(x[1]) for x in item_record_list]
             if window:
                 for i in range(len(item_list)):
                     item_slice = item_list[max(0, i - max_len):i]

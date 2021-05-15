@@ -5,21 +5,21 @@ import argparse
 from argparse import Namespace
 import logging
 
-
-from scipy import sparse as sp #type: ignore
-import numpy as np #type: ignore
-from sklearn.utils.extmath import randomized_svd #type: ignore
-from tqdm import tqdm #type: ignore
-import pandas as pd #type: ignore
-from scipy import sparse as sp #type: ignore
-import torch #type: ignore
+from scipy import sparse as sp  # type: ignore
+import numpy as np  # type: ignore
+from sklearn.utils.extmath import randomized_svd  # type: ignore
+from tqdm import tqdm  # type: ignore
+import pandas as pd  # type: ignore
+from scipy import sparse as sp  # type: ignore
+import torch  # type: ignore
 
 from deeprecsys.module import *
 from deeprecsys.recommender import *
 from deeprecsys.eval import unbiased_eval
-from deeprecsys import data
+from deeprecsys import data, reweight
 
 POSITIVE_RATING_THRESHOLD = 3
+
 
 def frame2mat(df, num_u, num_i):
     row, col = df.uidx, df.iidx
@@ -27,8 +27,8 @@ def frame2mat(df, num_u, num_i):
     mat = sp.csr_matrix((data, (row, col)), shape=(num_u, num_i))
     return mat
 
-def main(args: Namespace):
 
+def main(args: Namespace):
     ratings = pd.read_feather(os.path.join(args.data_path, args.data_name))
     user_num, item_num = ratings.uidx.max() + 1, ratings.iidx.max() + 1
 
@@ -58,39 +58,18 @@ def main(args: Namespace):
 
     logger.info(f'test data size: {te_df.shape}')
 
-    rating_model = None
-    tr_mat = frame2mat(tr_df, user_num, item_num)
-
-    label_dataset = data.LabeledSequenceData(labeled_hist,
-                                             max_len=args.max_len,
-                                             padding_idx=item_num,
-                                             item_num=item_num)
-    logging.info('Built labeled dataset in Torch')
-
     f_module = FactorModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
     w_module = FactorModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
     g_module = FactorModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
 
-    print(f_module.is_deep)
+    print(isinstance(f_module, SeqModelMixin))
 
     # TODO: Add reweight model training on real data using both sparse and seq model. It needs to converge
 
+    rw_m = reweight.ReWeightLearner(f=f_module, g=g_module, w=w_module,
+                                    lambda_=args.lambda_, user_num=user_num, item_num=item_num)
 
-
-
-
-    # pop_factor = PopularModel(item_cnt)
-    # logging.info('-------The Popularity model-------')
-    # pop_model = PopRecommender(pop_factor)
-    # logger.info('biased eval for plian popular model on test')
-    # unbiased_eval(user_num, item_num, te_df, pop_model, past_hist=past_hist)
-    #
-    # logger.info('-------The SVD model---------')
-    # sv = SVDRecommender(tr_mat.shape[0], tr_mat.shape[1], args.dim)
-    # logger.info(f'model with dimension {args.dim}')
-    # sv.fit(tr_mat)
-    # logger.info('biased eval for SVD model on test')
-    # unbiased_eval(user_num, item_num, te_df, sv, past_hist=past_hist)
+    rw_m.fit(tr_df=tr_df, test_df=te_df)
 
 
 if __name__ == '__main__':
@@ -102,6 +81,7 @@ if __name__ == '__main__':
     parser.add_argument('--cuda_idx', type=int, default=0)
     parser.add_argument('--data_path', type=str, default='data/ml-1m/ml-1m')
     parser.add_argument('--data_name', type=str, default='ratings.feather')
+    parser.add_argument('--lambda_', type=float, default=0.5)
     parser.add_argument('--prefix', type=str, default='ml_1m_real')
     parser.add_argument('--num_neg', type=str, default=4)
     parser.add_argument('--tune_mode', action='store_true')

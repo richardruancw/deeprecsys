@@ -62,7 +62,7 @@ def unbiased_eval(num_user: int, num_item: int, dat_df: pd.DataFrame,
                     (top_rel / expo_score)
     logger.info(
         f'Recall@{cut_len} = {recall_cnt / len(row):.5f}; NDCG@{cut_len} = {ndcg_sum / len(row):.5f}')
-    return recall_cnt / len(row)
+    return {'recall': recall_cnt / len(row), 'ndcg': ndcg_sum / len(row)}
 
 
 
