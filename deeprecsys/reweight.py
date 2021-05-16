@@ -35,6 +35,25 @@ def conditional_l2(user, item, m):
         return 0
 
 
+def obj_func(f_prob, w_prob, g_score, f_recom_score, labels, lambda_):
+    logloss = -1 * (labels * torch.log(f_prob) +
+                     (1 - labels) * torch.log(1 - f_prob)) * w_prob
+    diff = w_prob * g_score - f_recom_score * g_score
+    obj = logloss + lambda_ * diff
+    return obj, logloss, diff
+
+
+def aggregate_l2(user, item, *models):
+    l2 = 0
+    for m in models:
+        l2 += conditional_l2(user, item, m)
+    return l2
+
+
+def list2deivce(vars, device):
+    return [v.to(device) for v in vars]
+
+
 class ReWeightLearner:
     def __init__(self, f: torch.nn.Module,
                  w: torch.nn.Module,
@@ -58,10 +77,28 @@ class ReWeightLearner:
             test_df: Optional[pd.DataFrame] = None,
             run_path: Optional[str] = None,
             batch_size: int = 1024, max_len: int = 50,
-            min_count: int = 1, max_count: int = 0,
-            epoch: int = 10, lr: float = 0.01, decay: float = 0):
+            min_count: int = 1, max_count: int = 1,
+            epoch: int = 10, lr: float = 0.01, decay: float = 0, sample_len: int = 100, cut_len: int = 10,
+            cuda: Optional[int] = None):
+
+        if cuda is None:
+            device = torch.device('cpu')
+        else:
+            device = torch.device(f'cuda:{cuda}')
+
+        self.f = self.f.to(device)
+        self.g = self.g.to(device)
+        self.w = self.w.to(device)
 
         past_hist = tr_df.groupby('uidx').apply(lambda x: set(x.iidx)).to_dict()
+
+        if isinstance(self.recom_model, recommender.DeepRecommender):
+            hist = tr_df.groupby('uidx').apply(
+                lambda x: list(zip(x.ts, x.iidx))).to_dict()
+            for k in hist.keys():
+                hist[k] = [x[1] for x in sorted(hist[k])]
+            self.recom_model.set_user_record(hist)
+
         item_cnt_dict = tr_df.groupby('iidx').count().uidx.to_dict()
         item_cnt = np.array([item_cnt_dict.get(iidx, 0) for iidx in range(self.item_num)])
         labeled_hist = tr_df.groupby('uidx').apply(
@@ -92,7 +129,20 @@ class ReWeightLearner:
             counter = 0
             run_max = False
             obj_val = 0
-            for user, item_idx, labels, user_hist in data_loader:
+            for obs in data_loader:
+                user, item_idx, labels, user_hist = list2deivce(obs, device=device)
+                user = user.unsqueeze(-1)
+                item_idx = item_idx.unsqueeze(-1)
+                # item_idx: [B]
+                bsz = user.shape[0]
+                negative_samples = torch.randint(0, self.item_num, size=(sample_len,), device=device)
+                with torch.no_grad():
+                    user_ext = user.repeat(1, sample_len) # [B, sample_len]
+                    negative_samples = negative_samples.repeat(bsz).view(bsz, -1) # [B, sample_len]
+                    recom_score = conditional_forward(user_ext, negative_samples, user_hist, self.f) # [B, sample_len]
+                    sorted_score, _ = torch.sort(recom_score, descending=True)
+                    threshold_prob = act_func(sorted_score[:, cut_len]) # [B]
+
                 if not run_max:
                     with torch.no_grad():
                         self.g.eval()
@@ -103,15 +153,13 @@ class ReWeightLearner:
                     w_prob = act_func(conditional_forward(user, item_idx, user_hist, self.w))
                     f_prob = act_func(conditional_forward(user, item_idx, user_hist, self.f))
                     # we need to maximize the objective
-                    obj = -1 * -1 * (labels * torch.log(f_prob) +
-                                     (1 - labels) * torch.log(1 - f_prob)) * w_prob
-                    obj += self.lambda_ * (w_prob * g_score - f_prob * g_score)
+                    f_recom = (f_prob > threshold_prob).float()
+                    obj, logloss, diff = obj_func(f_prob, w_prob, g_score, f_recom, labels, self.lambda_)
                     # TODO: Implement the rules of real recommender f
                     loss = obj.mean()
-                    obj_val = obj.mean().item()
                     # apply l2 penalty for sparse model only
-                    l2 = conditional_l2(user, item_idx, self.w) + conditional_l2(user, item_idx, self.f)
-                    loss += l2 * decay
+                    l2 = aggregate_l2(user, item_idx, self.f, self.w, self.g) * decay
+                    loss += l2
                     loss.backward()
                     min_optimizer.step()
                 else:
@@ -122,16 +170,17 @@ class ReWeightLearner:
                         f_prob = act_func(conditional_forward(user, item_idx, user_hist, self.f))
                     max_optimizer.zero_grad()
                     g_score = conditional_forward(user, item_idx, user_hist, self.g)
-                    obj = -1 * -1 * (labels * torch.log(f_prob) +
-                                     (1 - labels) * torch.log(1 - f_prob)) * w_prob
-                    obj += self.lambda_ * (w_prob * g_score - f_prob * g_score)
-                    obj_val = obj.mean().item()
+                    f_recom = (f_prob > threshold_prob).float()
+                    obj, logloss, diff = obj_func(f_prob, w_prob, g_score, f_recom, labels, self.lambda_)
                     loss = -1 * obj.mean()
-                    l2 = conditional_l2(user, item_idx, self.w) + conditional_l2(user, item_idx, self.f)
-                    loss += l2 * decay
+                    l2 = aggregate_l2(user, item_idx, self.f, self.w, self.g) * decay
+                    loss += l2
                     loss.backward()
                     max_optimizer.step()
-                writer.add_scalar('Objective/train', obj_val, iter_)
+                writer.add_scalar('Objective/train', obj.mean().item(), iter_)
+                writer.add_scalar('Logloss/train', logloss.mean().item(), iter_)
+                writer.add_scalar('Diff/train', diff.mean().item(), iter_)
+                writer.add_scalar('L2/train', l2, iter_)
                 # Alternate between minimization and maximization.
                 counter += 1
                 if run_max and counter >= max_count:
@@ -144,7 +193,6 @@ class ReWeightLearner:
 
             if test_df is not None:
                 self.f.eval()
-                cut_len = 10
                 rest = unbiased_eval(self.user_num, self.item_num, test_df, self.recom_model,
                                      rel_model=None,
                                      cut_len=cut_len,

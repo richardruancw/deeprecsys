@@ -137,10 +137,11 @@ class MLPRecModel(nn.Module, SparseModelMixin):
             user_num: int,
             item_num: int,
             factor_num: int,
-            layers_dim: List[int] = (
-                32,
-                16)):
+            layers_dim: Optional[List[int]] = None):
         super(MLPRecModel, self).__init__()
+        if not layers_dim:
+            layers_dim = [32,
+                          16]
         self.embed_user = nn.Embedding(user_num, factor_num, sparse=True)
         self.embed_item = nn.Embedding(item_num, factor_num, sparse=True)
 
@@ -287,7 +288,7 @@ class NoiseFactor(nn.Module, SparseModelMixin):
         return self.facotr_model.get_device()
 
 
-class AttentionModel(nn.Module, SparseModelMixin):
+class AttentionModel(nn.Module, SeqModelMixin):
     def __init__(
             self,
             user_num: int,
@@ -342,7 +343,6 @@ class AttentionModel(nn.Module, SparseModelMixin):
         # items - [B, ord]
         assert (len(items.shape) == 2)
         assert (items.shape[0] == user_hists.shape[0])
-
         affinity_vec = self.seq_vector(user_hists)  # [B, dim]
         affinity_vec = affinity_vec.unsqueeze(1).repeat(1, items.shape[1], 1)  # [B, ord, dim]
         target_item_vec = self.embed_item(items)  # - [B, ord, dim]
