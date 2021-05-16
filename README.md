@@ -6,5 +6,5 @@
 # start tensorboard
 tensorboard --logdir=runs
 
-python test_reweight --model seq --cuda_idx 0
+python run_reweight --model seq --cuda_idx 0
 ```
