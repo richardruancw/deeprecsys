@@ -69,6 +69,20 @@ def main(args: Namespace):
     logger.info('biased eval for SVD model on test')
     unbiased_eval(user_num, item_num, te_df, sv, past_hist=past_hist)
 
+    # logger.info('------Regular MF model ------')
+    # mf_m = module.FactorModel(user_num, item_num, args.dim)
+    # mf_recom = recommender.ClassRecommender(user_num, item_num, mf_m)
+    # mf_recom.fit(tr_df, test_df=te_df,
+    #                num_epochs=args.epoch,
+    #                cuda=args.cuda_idx,
+    #                decay=args.decay,
+    #                num_neg=args.num_neg,
+    #                batch_size=args.batch_size,
+    #                past_hist=past_hist,
+    #                lr=args.lr)
+    # unbiased_eval(user_num, item_num, te_df, mf_recom, past_hist=past_hist)
+
+    logger.info('------Reweight and rebalance model ------')
     if args.model == 'mf':
         f_module = module.FactorModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
         w_module = module.FactorModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
@@ -85,7 +99,8 @@ def main(args: Namespace):
         raise ValueError(f'model not defined! choices are: {ALLOWED_MODELS}')
 
     rw_m = reweight.ReWeightLearner(f=f_module, g=g_module, w=w_module,
-                                    lambda_=args.lambda_, user_num=user_num, item_num=item_num)
+                                    lambda_=args.lambda_, user_num=user_num, item_num=item_num,
+                                    w_lower_bound=args.w_lower_bound)
 
     rw_m.fit(tr_df=tr_df, test_df=te_df, decay=args.decay, max_len=args.max_len, cuda=args.cuda_idx,
              max_count=args.max_step, min_count=args.min_step)
@@ -94,18 +109,22 @@ def main(args: Namespace):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=1024)
-    parser.add_argument('--dim', type=int, default=32)
+    parser.add_argument('--dim', type=int, default=32, help='Dimension of the embedding')
     parser.add_argument('--epoch', type=int, default=50)
-    parser.add_argument('--decay', type=float, default=1e-7)
-    parser.add_argument('--cuda_idx', type=int, default=None)
+    parser.add_argument('--decay', type=float, default=1e-7, help='l2 regularization strength for sparse model')
+    parser.add_argument('--cuda_idx', type=int, default=None, help='Which GPU to use, default is to use CPU')
     parser.add_argument('--data_path', type=str, default='data/ml-1m/ml-1m')
     parser.add_argument('--data_name', type=str, default='ratings.feather')
     parser.add_argument('--lambda_', type=float, default=0.1)
     parser.add_argument('--prefix', type=str, default='ml_1m_real')
     parser.add_argument('--tune_mode', action='store_true')
     parser.add_argument('--lr', type=float, default=0.01)
-    parser.add_argument('--max_len', type=int, default=50)
-    parser.add_argument('--model', type=str, default='mf', choices=ALLOWED_MODELS)
+    parser.add_argument('--max_len', type=int, default=50, help='Maximum length of sequence')
+    parser.add_argument('--num_neg', type=str, default=0, help='Number of random negative samples per real label')
+    parser.add_argument('--w_lower_bound', type=float, default=None, help='Lower bound of w(u, i), set it 1 will '
+                                                                          'disable reweighitng')
+    parser.add_argument('--model', type=str, default='mf', choices=ALLOWED_MODELS, help='Base model used in min-max '
+                                                                                        'training')
     parser.add_argument('--max_step', type=int, default=1, help='number of batches per maximization step')
     parser.add_argument('--min_step', type=int, default=1, help='number of batches per minimization step')
 

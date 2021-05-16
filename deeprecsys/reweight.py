@@ -39,14 +39,6 @@ def conditional_l2(user, item, m):
         return 0
 
 
-def obj_func(f_prob, w_prob, g_score, f_recom_score, labels, lambda_):
-    logloss = -1 * (labels * torch.log(f_prob) +
-                    (1 - labels) * torch.log(1 - f_prob)) * w_prob
-    diff = w_prob * g_score - f_recom_score * g_score
-    obj = logloss + lambda_ * diff
-    return obj, logloss, diff
-
-
 def aggregate_l2(user, item, *models):
     l2 = 0
     for m in models:
@@ -84,18 +76,29 @@ class ReWeightLearner:
                  w: torch.nn.Module,
                  g: torch.nn.Module,
                  item_num: int, user_num: int,
-                 lambda_: float = 1) -> None:
+                 lambda_: float = 1,
+                 w_lower_bound: Optional[float] = None) -> None:
         self.f = f
         self.w = w
         self.g = g
         self.item_num = item_num
         self.user_num = user_num
+        self.w_lower_bound = w_lower_bound
         self.lambda_ = lambda_
 
         if isinstance(f, SparseModelMixin):
             self.recom_model = recommender.ClassRecommender(user_num, item_num, self.f)
         elif isinstance(f, SeqModelMixin):
             self.recom_model = recommender.DeepRecommender(user_num, item_num, self.f)
+
+    def obj_func(self, f_prob, w_prob, g_score, f_recom_score, labels):
+        if self.w_lower_bound:
+            w_prob = torch.clamp(w_prob, min=self.w_lower_bound)
+        logloss = -1 * (labels * torch.log(f_prob) +
+                        (1 - labels) * torch.log(1 - f_prob)) * w_prob
+        diff = w_prob * g_score - f_recom_score * g_score
+        obj = logloss + self.lambda_ * diff
+        return obj, logloss, diff
 
     def fit(self,
             tr_df: pd.DataFrame,
@@ -186,8 +189,8 @@ class ReWeightLearner:
                     f_prob = act_func(conditional_forward(user, item_idx, user_hist, self.f))
                     # we need to maximize the objective
                     f_recom = (f_prob > threshold_prob).float()
-                    obj, logloss, diff = obj_func(f_prob, w_prob, g_score, f_recom, labels, self.lambda_)
-                    # TODO: Implement the rules of real recommender f
+                    obj, logloss, diff = self.obj_func(f_prob, w_prob, g_score, f_recom, labels)
+
                     loss = obj.mean()
                     # apply l2 penalty for sparse model only
                     l2 = aggregate_l2(user, item_idx, self.f, self.w, self.g) * decay
@@ -205,7 +208,7 @@ class ReWeightLearner:
                     max_optimizer.zero_grad()
                     g_score = conditional_forward(user, item_idx, user_hist, self.g)
                     f_recom = (f_prob > threshold_prob).float()
-                    obj, logloss, diff = obj_func(f_prob, w_prob, g_score, f_recom, labels, self.lambda_)
+                    obj, logloss, diff = self.obj_func(f_prob, w_prob, g_score, f_recom, labels)
                     loss = -1 * obj.mean()
                     l2 = aggregate_l2(user, item_idx, self.f, self.w, self.g) * decay
                     loss += l2

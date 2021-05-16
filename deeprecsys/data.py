@@ -299,9 +299,12 @@ class LabeledSequenceData(data.Dataset):
                 max_len: int,
                 padding_idx: int,
                 item_num: int,
+                num_neg: int = 4,
+                past_hist: Optional[Dict[int, Set[int]]] = None,
                 is_training: bool = False,
                 window: bool = True,
-                allow_empty: bool =False) -> None:
+                seed: int = 1,
+                allow_empty: bool = False) -> None:
         """
         :param hist: use_idx to a list of [item_idx, label]
         :param max_len:
@@ -315,6 +318,9 @@ class LabeledSequenceData(data.Dataset):
         self.max_len = max_len
         self.padding_idx = padding_idx
         self.num_item = item_num
+        self.num_neg = num_neg
+        self.prng = RandomState(seed)
+        self.past_hist = past_hist
         self.logger = logging.getLogger(__name__)
         self.logger.debug('Build windowed data')
         self.records = []
@@ -327,10 +333,24 @@ class LabeledSequenceData(data.Dataset):
                     if not allow_empty and len(item_slice) == 0:
                         continue
                     self.records.append([uidx, item_list[i], label_list[i], item_slice])
+                    for _ in range(self.num_neg):
+                        neg_item = self.get_negative(uidx)
+                        self.records.append([uidx, neg_item, 0, item_slice])
             else:
                 if not allow_empty and len(item_list) == 1:
                     continue
-                self.records.append([uidx, item_list[-1], label_list[-1], item_list[-(max_len + 1):-1]])
+                item_slice = item_list[-(max_len + 1):-1]
+                self.records.append([uidx, item_list[-1], label_list[-1], item_slice])
+                for _ in range(self.num_neg):
+                    neg_item = self.get_negative(uidx)
+                    self.records.append([uidx, neg_item, 0, item_slice])
+
+    def get_negative(self, uidx):
+        is_past = True
+        negitem = self.prng.randint(self.num_item)
+        while self.past_hist is not None and negitem in self.past_hist.get(uidx, []):
+            negitem = self.prng.randint(self.num_item)
+        return negitem
 
     def __len__(self) -> int:
         return len(self.records)
