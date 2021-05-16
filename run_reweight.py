@@ -13,8 +13,9 @@ import pandas as pd  # type: ignore
 from scipy import sparse as sp  # type: ignore
 import torch  # type: ignore
 
-from deeprecsys import module
+from deeprecsys import module, recommender
 from deeprecsys import data, reweight
+from deeprecsys.eval import unbiased_eval
 
 POSITIVE_RATING_THRESHOLD = 3
 ALLOWED_MODELS = ['mf', 'mlp', 'seq']
@@ -48,6 +49,26 @@ def main(args: Namespace):
 
     logger.info(f'test data size: {te_df.shape}')
 
+    past_hist = tr_df.groupby('uidx').apply(lambda x: set(x.iidx)).to_dict()
+    item_cnt_dict = tr_df.groupby('iidx').count().uidx.to_dict()
+    item_cnt = np.array([item_cnt_dict.get(iidx, 0) for iidx in range(item_num)])
+
+    logger.info(f'test data size: {te_df.shape}')
+
+    tr_mat = frame2mat(tr_df, user_num, item_num)
+    pop_factor = module.PopularModel(item_cnt)
+    logging.info('-------The Popularity model-------')
+    pop_model = recommender.PopRecommender(pop_factor)
+    logger.info('biased eval for plian popular model on test')
+    unbiased_eval(user_num, item_num, te_df, pop_model, past_hist=past_hist)
+
+    logger.info('-------The SVD model---------')
+    sv = recommender.SVDRecommender(tr_mat.shape[0], tr_mat.shape[1], args.dim)
+    logger.info(f'model with dimension {args.dim}')
+    sv.fit(tr_mat)
+    logger.info('biased eval for SVD model on test')
+    unbiased_eval(user_num, item_num, te_df, sv, past_hist=past_hist)
+
     if args.model == 'mf':
         f_module = module.FactorModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
         w_module = module.FactorModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
@@ -66,7 +87,8 @@ def main(args: Namespace):
     rw_m = reweight.ReWeightLearner(f=f_module, g=g_module, w=w_module,
                                     lambda_=args.lambda_, user_num=user_num, item_num=item_num)
 
-    rw_m.fit(tr_df=tr_df, test_df=te_df, decay=args.decay, max_len=args.max_len, cuda=args.cuda_idx)
+    rw_m.fit(tr_df=tr_df, test_df=te_df, decay=args.decay, max_len=args.max_len, cuda=args.cuda_idx,
+             max_count=args.max_step, min_count=args.min_step)
 
 
 if __name__ == '__main__':
@@ -80,11 +102,12 @@ if __name__ == '__main__':
     parser.add_argument('--data_name', type=str, default='ratings.feather')
     parser.add_argument('--lambda_', type=float, default=0.1)
     parser.add_argument('--prefix', type=str, default='ml_1m_real')
-    parser.add_argument('--num_neg', type=str, default=4)
     parser.add_argument('--tune_mode', action='store_true')
     parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--max_len', type=int, default=50)
     parser.add_argument('--model', type=str, default='mf', choices=ALLOWED_MODELS)
+    parser.add_argument('--max_step', type=int, default=1, help='number of batches per maximization step')
+    parser.add_argument('--min_step', type=int, default=1, help='number of batches per minimization step')
 
     args = parser.parse_args()
 

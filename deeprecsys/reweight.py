@@ -1,18 +1,22 @@
 """Implement the re-weight based learner"""
-from typing import Union, Optional
+from bisect import bisect
+from enum import Enum
+from typing import Optional, Dict
 
 import numpy as np
 import pandas as pd
 import torch
-import deeprecsys
-from deeprecsys.eval import unbiased_eval
-from deeprecsys.module import FactorModel, SeqModelMixin, SparseModelMixin
-from deeprecsys.data import LabeledSequenceData
-from deeprecsys import recommender
 from torch.utils.tensorboard import SummaryWriter
 
+from deeprecsys import recommender
+from deeprecsys.data import LabeledSequenceData
+from deeprecsys.eval import unbiased_eval
+from deeprecsys.module import SeqModelMixin, SparseModelMixin
 
-# from deeprecsys.module import
+
+class OptimizationStep(Enum):
+    ARG_MIN = 0
+    ARG_MAX = 1
 
 
 def conditional_forward(user, item, user_hist, m: torch.nn.Module):
@@ -37,7 +41,7 @@ def conditional_l2(user, item, m):
 
 def obj_func(f_prob, w_prob, g_score, f_recom_score, labels, lambda_):
     logloss = -1 * (labels * torch.log(f_prob) +
-                     (1 - labels) * torch.log(1 - f_prob)) * w_prob
+                    (1 - labels) * torch.log(1 - f_prob)) * w_prob
     diff = w_prob * g_score - f_recom_score * g_score
     obj = logloss + lambda_ * diff
     return obj, logloss, diff
@@ -52,6 +56,27 @@ def aggregate_l2(user, item, *models):
 
 def list2deivce(vars, device):
     return [v.to(device) for v in vars]
+
+
+class AlternatingCounter:
+    def __init__(self, step_specs: Dict[Enum, int]):
+        self.counter = 0
+        curr_size = 0
+        upper_bounds = []
+        bound2enum = {}
+        for k, step in step_specs.items():
+            if step > 0:
+                curr_size += step
+                upper_bounds.append(curr_size)
+                bound2enum[curr_size] = k
+        self.max_size = curr_size
+        self.uppper_bounds = upper_bounds
+        self.bound2enum = bound2enum
+
+    def touch(self):
+        idx = bisect(self.uppper_bounds, self.counter)
+        self.counter = (self.counter + 1) % self.max_size
+        return self.bound2enum[self.uppper_bounds[idx]]
 
 
 class ReWeightLearner:
@@ -121,32 +146,39 @@ class ReWeightLearner:
         min_optimizer = recommender.build_optimizer(lr, self.f, self.w)
         max_optimizer = recommender.build_optimizer(lr, self.g)
 
+        counter = AlternatingCounter(step_specs={OptimizationStep.ARG_MIN: min_count,
+                                                 OptimizationStep.ARG_MAX: max_count})
+
         def act_func(x):
             return torch.sigmoid(torch.clamp(x, min=-8, max=8))
 
         iter_ = 0
         for current_epoch in range(epoch):
-            counter = 0
-            run_max = False
-            obj_val = 0
+            run_mode = OptimizationStep.ARG_MIN
             for obs in data_loader:
+
                 user, item_idx, labels, user_hist = list2deivce(obs, device=device)
                 user = user.unsqueeze(-1)
                 item_idx = item_idx.unsqueeze(-1)
+                labels = labels.unsqueeze(-1)
                 # item_idx: [B]
                 bsz = user.shape[0]
+
+                #  Probability threshold to approximate the quantile function using 100 random negative examples
                 negative_samples = torch.randint(0, self.item_num, size=(sample_len,), device=device)
                 with torch.no_grad():
-                    user_ext = user.repeat(1, sample_len) # [B, sample_len]
-                    negative_samples = negative_samples.repeat(bsz).view(bsz, -1) # [B, sample_len]
-                    recom_score = conditional_forward(user_ext, negative_samples, user_hist, self.f) # [B, sample_len]
+                    user_ext = user.repeat(1, sample_len)  # [B, sample_len]
+                    negative_samples = negative_samples.repeat(bsz).view(bsz, -1)  # [B, sample_len]
+                    recom_score = conditional_forward(user_ext, negative_samples, user_hist, self.f)  # [B, sample_len]
                     sorted_score, _ = torch.sort(recom_score, descending=True)
-                    threshold_prob = act_func(sorted_score[:, cut_len]) # [B]
+                    threshold_prob = act_func(sorted_score[:, cut_len])  # [B]
 
-                if not run_max:
+                run_mode = counter.touch()
+                if run_mode == OptimizationStep.ARG_MIN:
+                    self.g.eval()
                     with torch.no_grad():
-                        self.g.eval()
                         g_score = conditional_forward(user, item_idx, user_hist, self.g)
+                    self.g.train()
                     self.w.train()
                     self.f.train()
                     min_optimizer.zero_grad()
@@ -162,12 +194,14 @@ class ReWeightLearner:
                     loss += l2
                     loss.backward()
                     min_optimizer.step()
-                else:
+                elif run_mode == OptimizationStep.ARG_MAX:
+                    self.w.eval()
+                    self.f.eval()
                     with torch.no_grad():
-                        self.w.eval()
-                        self.f.eval()
                         w_prob = act_func(conditional_forward(user, item_idx, user_hist, self.w))
                         f_prob = act_func(conditional_forward(user, item_idx, user_hist, self.f))
+                    self.w.train()
+                    self.f.train()
                     max_optimizer.zero_grad()
                     g_score = conditional_forward(user, item_idx, user_hist, self.g)
                     f_recom = (f_prob > threshold_prob).float()
@@ -177,18 +211,14 @@ class ReWeightLearner:
                     loss += l2
                     loss.backward()
                     max_optimizer.step()
+                else:
+                    raise NotImplementedError()
+
                 writer.add_scalar('Objective/train', obj.mean().item(), iter_)
                 writer.add_scalar('Logloss/train', logloss.mean().item(), iter_)
                 writer.add_scalar('Diff/train', diff.mean().item(), iter_)
                 writer.add_scalar('L2/train', l2, iter_)
                 # Alternate between minimization and maximization.
-                counter += 1
-                if run_max and counter >= max_count:
-                    run_max = False
-                    counter = 0
-                elif not run_max and counter >= min_count:
-                    run_max = True
-                    counter = 0
                 iter_ += 1
 
             if test_df is not None:
