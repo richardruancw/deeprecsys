@@ -9,7 +9,9 @@ setup(name='deeprecsys',
             'tqdm',
             'numpy',
             'scipy',
-            'scikit_learn'
+            'scikit_learn',
+            'tensorboard',
+            'pytest'
       ],
-      packages=['deeprecsys'],
+      packages=find_packages(),
       package_data={"deeprecsys": ["py.typed"]})

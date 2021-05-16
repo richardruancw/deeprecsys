@@ -10,8 +10,19 @@ import numpy as np  # type: ignore
 import torch  # type: ignore
 from torch import nn  # type: ignore
 
-class PopularModel(nn.Module):
-    def __init__(self, pop_cnt:  np.ndarray, shrinkage: float = 0.5):
+
+class SparseModelMixin:
+    def forward(self, user: torch.Tensor, item: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError()
+
+
+class SeqModelMixin:
+    def forward(self, items: torch.Tensor, user_hists: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError()
+
+
+class PopularModel(nn.Module, SparseModelMixin):
+    def __init__(self, pop_cnt: np.ndarray, shrinkage: float = 0.5):
         super(PopularModel, self).__init__()
         pop_cnt_cp = pop_cnt.copy()
         pop_cnt_cp[pop_cnt_cp < 1] = 1
@@ -27,8 +38,9 @@ class PopularModel(nn.Module):
 
     def get_device(self):
         return self.rep_pop_table.weight.device
-        
-class FactorModel(nn.Module):
+
+
+class FactorModel(nn.Module, SparseModelMixin):
     def __init__(self, user_num: int, item_num: int, factor_num: int) -> None:
         super(FactorModel, self).__init__()
         self.embed_user = nn.Embedding(user_num, factor_num, sparse=True)
@@ -37,7 +49,7 @@ class FactorModel(nn.Module):
         self.bias_item = nn.Embedding(item_num, 1, sparse=True)
 
         self.final_layer = nn.Linear(factor_num, 1, bias=True)
-        #self.bias_global = nn.Parameter(torch.zeros(1))
+        # self.bias_global = nn.Parameter(torch.zeros(1))
 
         nn.init.kaiming_normal_(self.embed_user.weight)
         nn.init.kaiming_normal_(self.embed_item.weight)
@@ -60,7 +72,7 @@ class FactorModel(nn.Module):
 
     def get_sparse_weight(self) -> List[torch.Tensor]:
         out = [self.embed_user.weight, self.bias_user.weight,
-                self.embed_item.weight, self.bias_item.weight]
+               self.embed_item.weight, self.bias_item.weight]
         return out
 
     def get_dense_weight(self) -> List[torch.Tensor]:
@@ -92,12 +104,13 @@ class BetaModel(nn.Module):
         nn.init.zeros_(self.user_const.weight)
         nn.init.zeros_(self.item_const.weight)
 
-    def forward(self, user: torch.Tensor, item: torch.Tensor, g_s: torch.Tensor, label: torch.Tensor) -> torch.Tensor:  # type: ignore
-        #user_v = self.user_const(user).squeeze(-1)
-        #item_v = self.item_const(item).squeeze(-1)
-        #score = (self.alpha + self.beta * g_s + self.label_coef * label * g_s)
+    def forward(self, user: torch.Tensor, item: torch.Tensor, g_s: torch.Tensor,
+                label: torch.Tensor) -> torch.Tensor:  # type: ignore
+        # user_v = self.user_const(user).squeeze(-1)
+        # item_v = self.item_const(item).squeeze(-1)
+        # score = (self.alpha + self.beta * g_s + self.label_coef * label * g_s)
         score = (self.alpha + self.beta * g_s + self.label_coef * label * g_s)  # beta v2
-        #score += user_v + item_v
+        # score += user_v + item_v
         return score
 
     def get_sparse_weight(self) -> List[torch.Tensor]:
@@ -112,22 +125,23 @@ class BetaModel(nn.Module):
         item_v = self.item_const(item).squeeze(-1)
         l2_loss = (user_v ** 2).sum()
         l2_loss += (item_v ** 2).sum()
-        #l2_loss += (self.beta ** 2).sum()
-        #l2_loss += (self.alpha ** 2).sum()
-        #l2_loss += (self.label_coef ** 2).sum()
+        # l2_loss += (self.beta ** 2).sum()
+        # l2_loss += (self.alpha ** 2).sum()
+        # l2_loss += (self.label_coef ** 2).sum()
         return l2_loss
 
 
-class MLPRecModel(nn.Module):
+class MLPRecModel(nn.Module, SparseModelMixin):
     def __init__(
-        self,
-        user_num: int,
-        item_num: int,
-        factor_num: int,
-        layers_dim: List[int] = [
-            32,
-            16]):
+            self,
+            user_num: int,
+            item_num: int,
+            factor_num: int,
+            layers_dim: Optional[List[int]] = None):
         super(MLPRecModel, self).__init__()
+        if not layers_dim:
+            layers_dim = [32,
+                          16]
         self.embed_user = nn.Embedding(user_num, factor_num, sparse=True)
         self.embed_item = nn.Embedding(item_num, factor_num, sparse=True)
 
@@ -135,7 +149,7 @@ class MLPRecModel(nn.Module):
         nn.init.kaiming_normal_(self.embed_item.weight)
 
         self.dense_layers = nn.ModuleList()
-        assert(isinstance(layers_dim, list))
+        assert (isinstance(layers_dim, list))
         input_dims = [2 * factor_num] + layers_dim
         for i in range(len(layers_dim)):
             self.dense_layers.append(
@@ -188,7 +202,8 @@ class MLPRecModel(nn.Module):
         #     l2_loss += (weight ** 2).sum()
         return l2_loss
 
-class NCFModel(nn.Module):
+
+class NCFModel(nn.Module, SparseModelMixin):
     def __init__(self, user_num: int, item_num: int, factor_num: int, layers_dim: Optional[List[int]] = None):
         super(NCFModel, self).__init__()
         if layers_dim is None:
@@ -200,7 +215,7 @@ class NCFModel(nn.Module):
         self.mlp = MLPRecModel(user_num, item_num, factor_num // 2, layers_dim=layers_dim)
         self.gmf = FactorModel(user_num, item_num, gmf_in_dim)
         self.out_put_layer = nn.Linear(in_features=factor_num, out_features=1, bias=True)
-        
+
     def affinity_vector(self, user: torch.Tensor, item: torch.Tensor) -> torch.Tensor:
         mlp_vec = self.mlp.affinity_vector(user, item)
         gmf_vec = self.gmf.affinity_vector(user, item)
@@ -245,7 +260,7 @@ class StructureNoise(nn.Module):
         return x
 
 
-class NoiseFactor(nn.Module):
+class NoiseFactor(nn.Module, SparseModelMixin):
     def __init__(self, facotr_model: torch.nn.Module, factor_num: int) -> None:
         super(NoiseFactor, self).__init__()
         self.noise_model = StructureNoise(factor_num)
@@ -272,14 +287,15 @@ class NoiseFactor(nn.Module):
     def get_device(self):
         return self.facotr_model.get_device()
 
-class AttentionModel(nn.Module):
+
+class AttentionModel(nn.Module, SeqModelMixin):
     def __init__(
             self,
             user_num: int,
             item_num: int,
             factor_num: int,
-            max_len: int = 20, 
-            num_heads: int = 2, 
+            max_len: int = 20,
+            num_heads: int = 2,
             num_layer: int = 2) -> None:
         super(AttentionModel, self).__init__()
         self.user_num = user_num
@@ -287,15 +303,15 @@ class AttentionModel(nn.Module):
         self.factor_num = factor_num
         self.padding_idx = self.item_num
         self.max_len = max_len
-        #self.embed_user = nn.Embedding(user_num, factor_num, sparse=True)
+        # self.embed_user = nn.Embedding(user_num, factor_num, sparse=True)
         self.embed_item = nn.Embedding(item_num + 1, factor_num, sparse=False, padding_idx=self.padding_idx)
-        #self.target_item_embed = nn.Embedding(item_num + 1, factor_num, sparse=False, padding_idx=self.padding_idx)
+        # self.target_item_embed = nn.Embedding(item_num + 1, factor_num, sparse=False, padding_idx=self.padding_idx)
         self.position_encode = nn.Embedding(max_len, factor_num, sparse=False)
         self.attention_list = nn.ModuleList()
         for _ in range(num_layer):
             self.attention_list.append(nn.MultiheadAttention(embed_dim=factor_num, num_heads=num_heads))
         self.output_affine = nn.Linear(factor_num, 1, bias=True)
-    
+
     def get_device(self):
         return self.embed_item.weight.device
 
@@ -306,35 +322,33 @@ class AttentionModel(nn.Module):
             item: [B]
             user_hist: [B, max_len]
         """
-        hist_item_vec = self.embed_item(user_hist) # [B, max_len, factor_num]
+        hist_item_vec = self.embed_item(user_hist)  # [B, max_len, factor_num]
         pos = torch.arange(self.max_len, device=self.get_device()).reshape(1, -1).repeat(hist_item_vec.shape[0], 1)
         # add positional encoding
         mask_item = (user_hist == self.padding_idx)
         attn_item_vec = hist_item_vec + self.position_encode(pos)
-        attn_item_vec = attn_item_vec.transpose(1, 0)  #[max_len, B, factor_num]
+        attn_item_vec = attn_item_vec.transpose(1, 0)  # [max_len, B, factor_num]
 
         for atten_layer in self.attention_list:
             attn_item_vec, _ = atten_layer(
-                query=attn_item_vec, 
-                key=attn_item_vec, 
-                value=attn_item_vec, 
+                query=attn_item_vec,
+                key=attn_item_vec,
+                value=attn_item_vec,
                 key_padding_mask=mask_item)
         # attn_item_vec - [max_len, B, factor_num]
-        attn_item_vec = attn_item_vec.mean(dim=0) #[B, factor_num]
+        attn_item_vec = attn_item_vec.mean(dim=0)  # [B, factor_num]
         return attn_item_vec
-    
+
     def forward(self, items: torch.Tensor, user_hists: torch.Tensor) -> torch.Tensor:
         # items - [B, ord]
-        assert(len(items.shape) == 2)
-        assert(items.shape[0] == user_hists.shape[0])
-
-        affinity_vec = self.seq_vector(user_hists) # [B, dim]
-        affinity_vec = affinity_vec.unsqueeze(1).repeat(1, items.shape[1], 1) # [B, ord, dim]
-        target_item_vec = self.embed_item(items) # - [B, ord, dim]
-        #target_item_vec = self.target_item_embed(items) # - [B, ord, dim]
-        score = self.output_affine(affinity_vec * target_item_vec) # [B, ord, 1]
-        return score.squeeze(-1) # [B, ord]
-
+        assert (len(items.shape) == 2)
+        assert (items.shape[0] == user_hists.shape[0])
+        affinity_vec = self.seq_vector(user_hists)  # [B, dim]
+        affinity_vec = affinity_vec.unsqueeze(1).repeat(1, items.shape[1], 1)  # [B, ord, dim]
+        target_item_vec = self.embed_item(items)  # - [B, ord, dim]
+        # target_item_vec = self.target_item_embed(items) # - [B, ord, dim]
+        score = self.output_affine(affinity_vec * target_item_vec)  # [B, ord, 1]
+        return score.squeeze(-1)  # [B, ord]
 
     def get_dense_weight(self):
         return list(self.parameters())
@@ -345,4 +359,3 @@ class AttentionModel(nn.Module):
     def get_l2(self, users: torch.Tensor, items: torch.Tensor) -> torch.Tensor:
         target_item_vec = self.embed_item(items)
         return (target_item_vec ** 2).sum() * 0
-    

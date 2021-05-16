@@ -293,7 +293,76 @@ class NegSequenceData(data.Dataset):
             negitem_list[idx] = negitem
         return uidx, pos_item, negitem_list, temp_hist
 
-        
+
+class LabeledSequenceData(data.Dataset):
+    def __init__(self, hist: Dict[int, List[Tuple[int, int]]],
+                max_len: int,
+                padding_idx: int,
+                item_num: int,
+                num_neg: int = 4,
+                past_hist: Optional[Dict[int, Set[int]]] = None,
+                is_training: bool = False,
+                window: bool = True,
+                seed: int = 1,
+                allow_empty: bool = False) -> None:
+        """
+        :param hist: use_idx to a list of [item_idx, label]
+        :param max_len:
+        :param padding_idx:
+        :param item_num:
+        :param is_training:
+        :param window: Use window approach to get data
+        :param allow_empty:
+        """
+        super(LabeledSequenceData, self).__init__()
+        self.max_len = max_len
+        self.padding_idx = padding_idx
+        self.num_item = item_num
+        self.num_neg = num_neg
+        self.prng = RandomState(seed)
+        self.past_hist = past_hist
+        self.logger = logging.getLogger(__name__)
+        self.logger.debug('Build windowed data')
+        self.records = []
+        for uidx, item_record_list in hist.items():
+            item_list = [x[0] for x in item_record_list]
+            label_list = [int(x[1]) for x in item_record_list]
+            if window:
+                for i in range(len(item_list)):
+                    item_slice = item_list[max(0, i - max_len):i]
+                    if not allow_empty and len(item_slice) == 0:
+                        continue
+                    self.records.append([uidx, item_list[i], label_list[i], item_slice])
+                    for _ in range(self.num_neg):
+                        neg_item = self.get_negative(uidx)
+                        self.records.append([uidx, neg_item, 0, item_slice])
+            else:
+                if not allow_empty and len(item_list) == 1:
+                    continue
+                item_slice = item_list[-(max_len + 1):-1]
+                self.records.append([uidx, item_list[-1], label_list[-1], item_slice])
+                for _ in range(self.num_neg):
+                    neg_item = self.get_negative(uidx)
+                    self.records.append([uidx, neg_item, 0, item_slice])
+
+    def get_negative(self, uidx):
+        is_past = True
+        negitem = self.prng.randint(self.num_item)
+        while self.past_hist is not None and negitem in self.past_hist.get(uidx, []):
+            negitem = self.prng.randint(self.num_item)
+        return negitem
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, idx):
+        temp_hist = np.zeros(self.max_len, dtype=int) + self.padding_idx
+        uidx, item_idx, label, item_hist =  self.records[idx]
+        assert(len(temp_hist) >= len(item_hist))
+        if len(item_hist) > 0:
+            temp_hist[-len(item_hist):] = item_hist
+
+        return uidx, item_idx, label, temp_hist
 
 
 if __name__ == '__main__':
