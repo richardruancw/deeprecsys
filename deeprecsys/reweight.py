@@ -118,6 +118,9 @@ class ReWeightLearner:
         self.g = self.g.to(device)
         self.w = self.w.to(device)
 
+        max_len = max_len if isinstance(self.f, SeqModelMixin) else 1
+        allow_empty = isinstance(self.f, SparseModelMixin)
+
         past_hist = tr_df.groupby('uidx').apply(lambda x: set(x.iidx)).to_dict()
 
         if isinstance(self.recom_model, recommender.DeepRecommender):
@@ -136,13 +139,16 @@ class ReWeightLearner:
 
         label_dataset = LabeledSequenceData(labeled_hist,
                                             max_len=max_len,
+                                            window=True,
                                             padding_idx=self.item_num,
-                                            item_num=self.item_num)
+                                            past_hist=past_hist,
+                                            item_num=self.item_num,
+                                            allow_empty=allow_empty)
         data_loader = torch.utils.data.DataLoader(
             label_dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=1,
+            num_workers=3,
             pin_memory=True)
 
         writer = SummaryWriter(log_dir=run_path)
@@ -157,9 +163,7 @@ class ReWeightLearner:
 
         iter_ = 0
         for current_epoch in range(epoch):
-            run_mode = OptimizationStep.ARG_MIN
             for obs in data_loader:
-
                 user, item_idx, labels, user_hist = list2deivce(obs, device=device)
                 user = user.unsqueeze(-1)
                 item_idx = item_idx.unsqueeze(-1)
@@ -169,12 +173,14 @@ class ReWeightLearner:
 
                 #  Probability threshold to approximate the quantile function using 100 random negative examples
                 negative_samples = torch.randint(0, self.item_num, size=(sample_len,), device=device)
+                self.f.eval()
                 with torch.no_grad():
                     user_ext = user.repeat(1, sample_len)  # [B, sample_len]
                     negative_samples = negative_samples.repeat(bsz).view(bsz, -1)  # [B, sample_len]
                     recom_score = conditional_forward(user_ext, negative_samples, user_hist, self.f)  # [B, sample_len]
                     sorted_score, _ = torch.sort(recom_score, descending=True)
                     threshold_prob = act_func(sorted_score[:, cut_len])  # [B]
+                self.f.train()
 
                 run_mode = counter.touch()
                 if run_mode == OptimizationStep.ARG_MIN:
@@ -182,9 +188,9 @@ class ReWeightLearner:
                     with torch.no_grad():
                         g_score = conditional_forward(user, item_idx, user_hist, self.g)
                     self.g.train()
+                    min_optimizer.zero_grad()
                     self.w.train()
                     self.f.train()
-                    min_optimizer.zero_grad()
                     w_prob = act_func(conditional_forward(user, item_idx, user_hist, self.w))
                     f_prob = act_func(conditional_forward(user, item_idx, user_hist, self.f))
                     # we need to maximize the objective

@@ -345,6 +345,8 @@ class LabeledSequenceData(data.Dataset):
                     neg_item = self.get_negative(uidx)
                     self.records.append([uidx, neg_item, 0, item_slice])
 
+        self.prng.shuffle(self.records)
+
     def get_negative(self, uidx):
         is_past = True
         negitem = self.prng.randint(self.num_item)

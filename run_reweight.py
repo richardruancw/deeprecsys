@@ -17,7 +17,7 @@ from deeprecsys import module, recommender
 from deeprecsys import data, reweight
 from deeprecsys.eval import unbiased_eval
 
-POSITIVE_RATING_THRESHOLD = 3
+POSITIVE_RATING_THRESHOLD = 0
 ALLOWED_MODELS = ['mf', 'mlp', 'seq']
 
 
@@ -46,6 +46,8 @@ def main(args: Namespace):
     # Rating >= 3 is positive, otherwise it is negative
     tr_df['rating'] = tr_df['rating'] > POSITIVE_RATING_THRESHOLD
     te_df['rating'] = te_df['rating'] > POSITIVE_RATING_THRESHOLD
+    #
+    # te_df = te_df[te_df['rating'] > 0]
 
     logger.info(f'test data size: {te_df.shape}')
 
@@ -120,7 +122,7 @@ if __name__ == '__main__':
     parser.add_argument('--tune_mode', action='store_true')
     parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--max_len', type=int, default=50, help='Maximum length of sequence')
-    parser.add_argument('--num_neg', type=str, default=0, help='Number of random negative samples per real label')
+    parser.add_argument('--num_neg', type=str, default=3, help='Number of random negative samples per real label')
     parser.add_argument('--w_lower_bound', type=float, default=None, help='Lower bound of w(u, i), set it 1 will '
                                                                           'disable reweighitng')
     parser.add_argument('--model', type=str, default='mf', choices=ALLOWED_MODELS, help='Base model used in min-max '
