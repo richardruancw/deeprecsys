@@ -1,7 +1,8 @@
 import logging
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Iterable
 
 import pandas as pd
+import torch
 from numpy.random import RandomState
 from scipy import sparse as sp #type: ignore
 import numpy as np #type: ignore
@@ -64,5 +65,45 @@ def unbiased_eval(num_user: int, num_item: int, dat_df: pd.DataFrame,
         f'Recall@{cut_len} = {recall_cnt / len(row):.5f}; NDCG@{cut_len} = {ndcg_sum / len(row):.5f}')
     return {'recall': recall_cnt / len(row), 'ndcg': ndcg_sum / len(row)}
 
+
+def unbiased_full_eval(user_num: int, item_num: int, dat_df: pd.DataFrame, recom:Recommender, topk: int,
+                       rel_model: Optional[Recommender] = None):
+    # generate recommendations for for all items
+    logger = logging.getLogger(__name__)
+    candidate_items = list(range(item_num))
+    user_top_items: Dict[int, Iterable[int]] = {}
+    for user in dat_df.uidx.unique():
+        _users = [user] * len(candidate_items)
+        scores = recom.score(_users, candidate_items)
+        sorted_idx = np.argsort(scores)[-topk:]
+        user_top_items[user] = sorted_idx
+
+    cum_user_score = 0
+    if rel_model:
+        for user, top_items in user_top_items.items():
+            _users = [user] * len(top_items)
+            rel_score = rel_model.score(_users, list(top_items))
+            rel_score = np.minimum(8, np.maximum(-8, rel_score))
+            rel_score = np.exp(rel_score) / (1 + np.exp(rel_score))
+            cum_user_score += rel_score.mean()
+    else:
+        user_label = {(uidx, iidx): rating for uidx, iidx, rating in zip(dat_df.uidx,
+                                                                         dat_df.iidx,
+                                                                         dat_df.rating)}
+        def empirical_score(user, items, user_label):
+            score = []
+            for item in items:
+                score.append(user_label.get((user, item), 0))
+            return np.mean(score)
+
+        for user, top_items in user_top_items.items():
+            cum_user_score += empirical_score(user, top_items, user_label)
+    rel_score = cum_user_score / len(user_top_items)
+    if rel_model:
+        logger.info(f'Full relevance score: {rel_score}')
+    else:
+        logger.info(f'Full empirical relevance score: {rel_score}')
+
+    return rel_score
 
 

@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from deeprecsys import recommender
 from deeprecsys.data import LabeledSequenceData
-from deeprecsys.eval import unbiased_eval
+from deeprecsys.eval import unbiased_eval, unbiased_full_eval
 from deeprecsys.module import SeqModelMixin, SparseModelMixin
 
 
@@ -91,6 +91,11 @@ class ReWeightLearner:
         elif isinstance(f, SeqModelMixin):
             self.recom_model = recommender.DeepRecommender(user_num, item_num, self.f)
 
+        if isinstance(f, SparseModelMixin):
+            self.rel_model = recommender.ClassRecommender(user_num, item_num, self.w)
+        elif isinstance(f, SeqModelMixin):
+            self.rel_model = recommender.DeepRecommender(user_num, item_num, self.w)
+
     def obj_func(self, f_prob, w_prob, g_score, f_recom_score, labels):
         if self.w_lower_bound:
             w_prob = torch.clamp(w_prob, min=self.w_lower_bound)
@@ -107,7 +112,7 @@ class ReWeightLearner:
             batch_size: int = 1024, max_len: int = 50,
             min_count: int = 1, max_count: int = 1,
             epoch: int = 10, lr: float = 0.01, decay: float = 0, sample_len: int = 100, cut_len: int = 10,
-            cuda: Optional[int] = None):
+            cuda: Optional[int] = None, topk: int = 100, true_rel_model: Optional[recommender.Recommender] = None):
 
         if cuda is None:
             device = torch.device('cpu')
@@ -232,11 +237,20 @@ class ReWeightLearner:
 
             if test_df is not None:
                 self.f.eval()
-                rest = unbiased_eval(self.user_num, self.item_num, test_df, self.recom_model,
-                                     rel_model=None,
-                                     cut_len=cut_len,
-                                     expo_model=None,
-                                     past_hist=past_hist)
+                # rest = unbiased_eval(self.user_num, self.item_num, test_df, self.recom_model,
+                #                      rel_model=None,
+                #                      cut_len=cut_len,
+                #                      expo_model=None,
+                #                      past_hist=past_hist)
+                #
+                # writer.add_scalar(f'Recall@{cut_len}/test', rest['recall'], current_epoch)
+                # writer.add_scalar(f'NDCG@{cut_len}/test', rest['ndcg'], current_epoch)
 
-                writer.add_scalar(f'Recall@{cut_len}/test', rest['recall'], current_epoch)
-                writer.add_scalar(f'NDCG@{cut_len}/test', rest['ndcg'], current_epoch)
+                rel_score = unbiased_full_eval(self.user_num, self.item_num, test_df, self.recom_model, topk=topk)
+                writer.add_scalar(f'empirical full_top_{topk}_relevance', rel_score, current_epoch)
+
+                if true_rel_model:
+                    rel_score = unbiased_full_eval(self.user_num, self.item_num, test_df, self.recom_model, topk=topk,
+                                                   rel_model=true_rel_model)
+                    writer.add_scalar(f'true full_top_{topk}_relevance', rel_score, current_epoch)
+

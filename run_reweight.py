@@ -15,7 +15,7 @@ import torch  # type: ignore
 
 from deeprecsys import module, recommender
 from deeprecsys import data, reweight
-from deeprecsys.eval import unbiased_eval
+from deeprecsys.eval import unbiased_eval, unbiased_full_eval
 
 POSITIVE_RATING_THRESHOLD = 0
 ALLOWED_MODELS = ['mf', 'mlp', 'seq']
@@ -45,7 +45,8 @@ def main(args: Namespace):
 
     # Rating >= 3 is positive, otherwise it is negative
     tr_df['rating'] = tr_df['rating'] > POSITIVE_RATING_THRESHOLD
-    te_df['rating'] = te_df['rating'] > POSITIVE_RATING_THRESHOLD
+
+    #te_df['rating'] = te_df['rating'] > POSITIVE_RATING_THRESHOLD
     #
     # te_df = te_df[te_df['rating'] > 0]
 
@@ -62,27 +63,30 @@ def main(args: Namespace):
     logging.info('-------The Popularity model-------')
     pop_model = recommender.PopRecommender(pop_factor)
     logger.info('biased eval for plian popular model on test')
-    unbiased_eval(user_num, item_num, te_df, pop_model, past_hist=past_hist)
+    unbiased_full_eval(user_num, item_num, te_df, pop_model, topk=args.eval_topk)
+    #unbiased_eval(user_num, item_num, te_df, pop_model, past_hist=past_hist)
 
     logger.info('-------The SVD model---------')
     sv = recommender.SVDRecommender(tr_mat.shape[0], tr_mat.shape[1], args.dim)
     logger.info(f'model with dimension {args.dim}')
     sv.fit(tr_mat)
     logger.info('biased eval for SVD model on test')
-    unbiased_eval(user_num, item_num, te_df, sv, past_hist=past_hist)
+    unbiased_full_eval(user_num, item_num, te_df, sv, topk=args.eval_topk)
+    #unbiased_eval(user_num, item_num, te_df, sv, past_hist=past_hist)
 
     # logger.info('------Regular MF model ------')
     # mf_m = module.FactorModel(user_num, item_num, args.dim)
     # mf_recom = recommender.ClassRecommender(user_num, item_num, mf_m)
-    # mf_recom.fit(tr_df, test_df=te_df,
-    #                num_epochs=args.epoch,
+    # mf_recom.fit(tr_df,
+    #                num_epochs=10,
     #                cuda=args.cuda_idx,
     #                decay=args.decay,
     #                num_neg=args.num_neg,
     #                batch_size=args.batch_size,
     #                past_hist=past_hist,
     #                lr=args.lr)
-    # unbiased_eval(user_num, item_num, te_df, mf_recom, past_hist=past_hist)
+    # #unbiased_eval(user_num, item_num, te_df, mf_recom, past_hist=past_hist)
+    # unbiased_full_eval(user_num, item_num, te_df, sv, topk=args.eval_topk)
 
     logger.info('------Reweight and rebalance model ------')
     if args.model == 'mf':
@@ -105,14 +109,14 @@ def main(args: Namespace):
                                     w_lower_bound=args.w_lower_bound)
 
     rw_m.fit(tr_df=tr_df, test_df=te_df, decay=args.decay, max_len=args.max_len, cuda=args.cuda_idx,
-             max_count=args.max_step, min_count=args.min_step)
+             max_count=args.max_step, min_count=args.min_step, epoch=args.epoch, topk=args.eval_topk)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=1024)
     parser.add_argument('--dim', type=int, default=32, help='Dimension of the embedding')
-    parser.add_argument('--epoch', type=int, default=50)
+    parser.add_argument('--epoch', type=int, default=10)
     parser.add_argument('--decay', type=float, default=1e-7, help='l2 regularization strength for sparse model')
     parser.add_argument('--cuda_idx', type=int, default=None, help='Which GPU to use, default is to use CPU')
     parser.add_argument('--data_path', type=str, default='data/ml-1m/ml-1m')
@@ -129,6 +133,7 @@ if __name__ == '__main__':
                                                                                         'training')
     parser.add_argument('--max_step', type=int, default=1, help='number of batches per maximization step')
     parser.add_argument('--min_step', type=int, default=1, help='number of batches per minimization step')
+    parser.add_argument('--eval_topk', type=int, default=100, help='top k items in full evaluations')
 
     args = parser.parse_args()
 
