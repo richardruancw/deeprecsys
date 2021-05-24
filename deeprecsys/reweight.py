@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from deeprecsys import recommender
 from deeprecsys.data import LabeledSequenceData
-from deeprecsys.eval import unbiased_eval
+from deeprecsys.eval import unbiased_eval, unbiased_full_eval
 from deeprecsys.module import SeqModelMixin, SparseModelMixin
 
 
@@ -91,6 +91,11 @@ class ReWeightLearner:
         elif isinstance(f, SeqModelMixin):
             self.recom_model = recommender.DeepRecommender(user_num, item_num, self.f)
 
+        if isinstance(f, SparseModelMixin):
+            self.rel_model = recommender.ClassRecommender(user_num, item_num, self.w)
+        elif isinstance(f, SeqModelMixin):
+            self.rel_model = recommender.DeepRecommender(user_num, item_num, self.w)
+
     def obj_func(self, f_prob, w_prob, g_score, f_recom_score, labels):
         if self.w_lower_bound:
             w_prob = torch.clamp(w_prob, min=self.w_lower_bound)
@@ -106,8 +111,8 @@ class ReWeightLearner:
             run_path: Optional[str] = None,
             batch_size: int = 1024, max_len: int = 50,
             min_count: int = 1, max_count: int = 1,
-            epoch: int = 10, lr: float = 0.01, decay: float = 0, sample_len: int = 100, cut_len: int = 10,
-            cuda: Optional[int] = None):
+            epoch: int = 10, max_lr: float = 0.01, min_lr: float = 0.01, decay: float = 0, sample_len: int = 100, cut_len: int = 10,
+            cuda: Optional[int] = None, topk: int = 100, true_rel_model: Optional[recommender.Recommender] = None):
 
         if cuda is None:
             device = torch.device('cpu')
@@ -117,6 +122,9 @@ class ReWeightLearner:
         self.f = self.f.to(device)
         self.g = self.g.to(device)
         self.w = self.w.to(device)
+
+        max_len = max_len if isinstance(self.f, SeqModelMixin) else 1
+        allow_empty = isinstance(self.f, SparseModelMixin)
 
         past_hist = tr_df.groupby('uidx').apply(lambda x: set(x.iidx)).to_dict()
 
@@ -136,18 +144,21 @@ class ReWeightLearner:
 
         label_dataset = LabeledSequenceData(labeled_hist,
                                             max_len=max_len,
+                                            window=True,
                                             padding_idx=self.item_num,
-                                            item_num=self.item_num)
+                                            past_hist=past_hist,
+                                            item_num=self.item_num,
+                                            allow_empty=allow_empty)
         data_loader = torch.utils.data.DataLoader(
             label_dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=1,
+            num_workers=3,
             pin_memory=True)
 
         writer = SummaryWriter(log_dir=run_path)
-        min_optimizer = recommender.build_optimizer(lr, self.f, self.w)
-        max_optimizer = recommender.build_optimizer(lr, self.g)
+        min_optimizer = recommender.build_optimizer(min_lr, self.f, self.w)
+        max_optimizer = recommender.build_optimizer(max_lr, self.g)
 
         counter = AlternatingCounter(step_specs={OptimizationStep.ARG_MIN: min_count,
                                                  OptimizationStep.ARG_MAX: max_count})
@@ -157,9 +168,7 @@ class ReWeightLearner:
 
         iter_ = 0
         for current_epoch in range(epoch):
-            run_mode = OptimizationStep.ARG_MIN
             for obs in data_loader:
-
                 user, item_idx, labels, user_hist = list2deivce(obs, device=device)
                 user = user.unsqueeze(-1)
                 item_idx = item_idx.unsqueeze(-1)
@@ -169,12 +178,14 @@ class ReWeightLearner:
 
                 #  Probability threshold to approximate the quantile function using 100 random negative examples
                 negative_samples = torch.randint(0, self.item_num, size=(sample_len,), device=device)
+                self.f.eval()
                 with torch.no_grad():
                     user_ext = user.repeat(1, sample_len)  # [B, sample_len]
                     negative_samples = negative_samples.repeat(bsz).view(bsz, -1)  # [B, sample_len]
                     recom_score = conditional_forward(user_ext, negative_samples, user_hist, self.f)  # [B, sample_len]
                     sorted_score, _ = torch.sort(recom_score, descending=True)
                     threshold_prob = act_func(sorted_score[:, cut_len])  # [B]
+                self.f.train()
 
                 run_mode = counter.touch()
                 if run_mode == OptimizationStep.ARG_MIN:
@@ -182,9 +193,9 @@ class ReWeightLearner:
                     with torch.no_grad():
                         g_score = conditional_forward(user, item_idx, user_hist, self.g)
                     self.g.train()
+                    min_optimizer.zero_grad()
                     self.w.train()
                     self.f.train()
-                    min_optimizer.zero_grad()
                     w_prob = act_func(conditional_forward(user, item_idx, user_hist, self.w))
                     f_prob = act_func(conditional_forward(user, item_idx, user_hist, self.f))
                     # we need to maximize the objective
@@ -226,11 +237,16 @@ class ReWeightLearner:
 
             if test_df is not None:
                 self.f.eval()
-                rest = unbiased_eval(self.user_num, self.item_num, test_df, self.recom_model,
-                                     rel_model=None,
-                                     cut_len=cut_len,
-                                     expo_model=None,
-                                     past_hist=past_hist)
+                # rest = unbiased_eval(self.user_num, self.item_num, test_df, self.recom_model,
+                #                      rel_model=None,
+                #                      cut_len=cut_len,
+                #                      expo_model=None,
+                #                      past_hist=past_hist)
+                #
+                # writer.add_scalar(f'Recall@{cut_len}/test', rest['recall'], current_epoch)
+                # writer.add_scalar(f'NDCG@{cut_len}/test', rest['ndcg'], current_epoch)
 
-                writer.add_scalar(f'Recall@{cut_len}/test', rest['recall'], current_epoch)
-                writer.add_scalar(f'NDCG@{cut_len}/test', rest['ndcg'], current_epoch)
+                rel_score = unbiased_full_eval(self.user_num, self.item_num, self.recom_model, topk=topk, dat_df=test_df,
+                                               rel_model=true_rel_model)
+                writer.add_scalar(f'full_top_{topk}_relevance', rel_score, current_epoch)
+
