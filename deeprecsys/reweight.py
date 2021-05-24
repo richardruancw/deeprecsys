@@ -111,7 +111,7 @@ class ReWeightLearner:
             run_path: Optional[str] = None,
             batch_size: int = 1024, max_len: int = 50,
             min_count: int = 1, max_count: int = 1,
-            epoch: int = 10, lr: float = 0.01, decay: float = 0, sample_len: int = 100, cut_len: int = 10,
+            epoch: int = 10, max_lr: float = 0.01, min_lr: float = 0.01, decay: float = 0, sample_len: int = 100, cut_len: int = 10,
             cuda: Optional[int] = None, topk: int = 100, true_rel_model: Optional[recommender.Recommender] = None):
 
         if cuda is None:
@@ -157,8 +157,8 @@ class ReWeightLearner:
             pin_memory=True)
 
         writer = SummaryWriter(log_dir=run_path)
-        min_optimizer = recommender.build_optimizer(lr, self.f, self.w)
-        max_optimizer = recommender.build_optimizer(lr, self.g)
+        min_optimizer = recommender.build_optimizer(min_lr, self.f, self.w)
+        max_optimizer = recommender.build_optimizer(max_lr, self.g)
 
         counter = AlternatingCounter(step_specs={OptimizationStep.ARG_MIN: min_count,
                                                  OptimizationStep.ARG_MAX: max_count})
@@ -246,11 +246,7 @@ class ReWeightLearner:
                 # writer.add_scalar(f'Recall@{cut_len}/test', rest['recall'], current_epoch)
                 # writer.add_scalar(f'NDCG@{cut_len}/test', rest['ndcg'], current_epoch)
 
-                rel_score = unbiased_full_eval(self.user_num, self.item_num, test_df, self.recom_model, topk=topk)
-                writer.add_scalar(f'empirical full_top_{topk}_relevance', rel_score, current_epoch)
-
-                if true_rel_model:
-                    rel_score = unbiased_full_eval(self.user_num, self.item_num, test_df, self.recom_model, topk=topk,
-                                                   rel_model=true_rel_model)
-                    writer.add_scalar(f'true full_top_{topk}_relevance', rel_score, current_epoch)
+                rel_score = unbiased_full_eval(self.user_num, self.item_num, self.recom_model, topk=topk, dat_df=test_df,
+                                               rel_model=true_rel_model)
+                writer.add_scalar(f'full_top_{topk}_relevance', rel_score, current_epoch)
 

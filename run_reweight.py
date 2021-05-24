@@ -32,9 +32,20 @@ def main(args: Namespace):
     ratings = pd.read_feather(os.path.join(args.data_path, args.data_name))
     user_num, item_num = ratings.uidx.max() + 1, ratings.iidx.max() + 1
 
-    tr_df = pd.read_feather(os.path.join(args.data_path, 'train.feather'))
-    val_df = pd.read_feather(os.path.join(args.data_path, 'val.feather'))
-    te_df = pd.read_feather(os.path.join(args.data_path, 'test.feather'))
+    if args.simulate:
+        tr_df = pd.read_feather(os.path.join(args.data_path, f'sim_train.feather'))
+        val_df = pd.read_feather(os.path.join(args.data_path, f'sim_val.feather'))
+        te_df = pd.read_feather(os.path.join(args.data_path, f'sim_test.feather'))
+
+        rel_factor = module.FactorModel(user_num, item_num, args.dim)
+        rel_factor.load_state_dict(torch.load(os.path.join(args.data_path, 'rel.pt')))
+        rel_factor.eval()
+        rel_model = recommender.RatingEstimator(user_num, item_num, rel_factor)
+    else:
+        tr_df = pd.read_feather(os.path.join(args.data_path, 'train.feather'))
+        val_df = pd.read_feather(os.path.join(args.data_path, 'val.feather'))
+        te_df = pd.read_feather(os.path.join(args.data_path, 'test.feather'))
+        rel_model = None
 
     if not args.tune_mode:
         tr_df = pd.concat([tr_df, val_df])
@@ -44,9 +55,13 @@ def main(args: Namespace):
         te_df = val_df
 
     # Rating >= 3 is positive, otherwise it is negative
-    tr_df['rating'] = tr_df['rating'] > POSITIVE_RATING_THRESHOLD
+    if not args.simulate:
+        tr_df['rating'] = tr_df['rating'] > POSITIVE_RATING_THRESHOLD
+    else:
+        tr_df['rating'] = 1
+        te_df['rating'] = 1
 
-    #te_df['rating'] = te_df['rating'] > POSITIVE_RATING_THRESHOLD
+    # te_df['rating'] = te_df['rating'] > POSITIVE_RATING_THRESHOLD
     #
     # te_df = te_df[te_df['rating'] > 0]
 
@@ -63,22 +78,22 @@ def main(args: Namespace):
     logging.info('-------The Popularity model-------')
     pop_model = recommender.PopRecommender(pop_factor)
     logger.info('biased eval for plian popular model on test')
-    unbiased_full_eval(user_num, item_num, te_df, pop_model, topk=args.eval_topk)
-    #unbiased_eval(user_num, item_num, te_df, pop_model, past_hist=past_hist)
+    unbiased_full_eval(user_num, item_num, pop_model, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model)
+    # unbiased_eval(user_num, item_num, te_df, pop_model, past_hist=past_hist)
 
     logger.info('-------The SVD model---------')
     sv = recommender.SVDRecommender(tr_mat.shape[0], tr_mat.shape[1], args.dim)
     logger.info(f'model with dimension {args.dim}')
     sv.fit(tr_mat)
     logger.info('biased eval for SVD model on test')
-    unbiased_full_eval(user_num, item_num, te_df, sv, topk=args.eval_topk)
-    #unbiased_eval(user_num, item_num, te_df, sv, past_hist=past_hist)
-
+    unbiased_full_eval(user_num, item_num, sv, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model)
+    # unbiased_eval(user_num, item_num, te_df, sv, past_hist=past_hist)
+    #
     # logger.info('------Regular MF model ------')
     # mf_m = module.FactorModel(user_num, item_num, args.dim)
     # mf_recom = recommender.ClassRecommender(user_num, item_num, mf_m)
     # mf_recom.fit(tr_df,
-    #                num_epochs=10,
+    #                num_epochs=5,
     #                cuda=args.cuda_idx,
     #                decay=args.decay,
     #                num_neg=args.num_neg,
@@ -86,7 +101,7 @@ def main(args: Namespace):
     #                past_hist=past_hist,
     #                lr=args.lr)
     # #unbiased_eval(user_num, item_num, te_df, mf_recom, past_hist=past_hist)
-    # unbiased_full_eval(user_num, item_num, te_df, sv, topk=args.eval_topk)
+    # unbiased_full_eval(user_num, item_num, mf_recom, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model)
 
     logger.info('------Reweight and rebalance model ------')
     if args.model == 'mf':
@@ -108,23 +123,32 @@ def main(args: Namespace):
                                     lambda_=args.lambda_, user_num=user_num, item_num=item_num,
                                     w_lower_bound=args.w_lower_bound)
 
-    rw_m.fit(tr_df=tr_df, test_df=te_df, decay=args.decay, max_len=args.max_len, cuda=args.cuda_idx,
-             max_count=args.max_step, min_count=args.min_step, epoch=args.epoch, topk=args.eval_topk)
+
+    rw_m.fit(tr_df=tr_df, test_df=te_df, min_lr=args.min_lr, max_lr=args.max_lr,
+             decay=args.decay, max_len=args.max_len, cuda=args.cuda_idx,
+             max_count=args.max_step, min_count=args.min_step, epoch=args.epoch, topk=args.eval_topk,
+             true_rel_model=rel_model)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=1024)
+    parser.add_argument('--batch_size', type=int, default=1024, help='Number of pairs per batch')
     parser.add_argument('--dim', type=int, default=32, help='Dimension of the embedding')
-    parser.add_argument('--epoch', type=int, default=10)
+    parser.add_argument('--epoch', type=int, default=10, help='Number of epochs')
     parser.add_argument('--decay', type=float, default=1e-7, help='l2 regularization strength for sparse model')
     parser.add_argument('--cuda_idx', type=int, default=None, help='Which GPU to use, default is to use CPU')
-    parser.add_argument('--data_path', type=str, default='data/ml-1m/ml-1m')
-    parser.add_argument('--data_name', type=str, default='ratings.feather')
-    parser.add_argument('--lambda_', type=float, default=0.1)
+    parser.add_argument('--data_path', type=str, default='data/ml-1m/ml-1m',
+                        help='Directory that contains all the data')
+    parser.add_argument('--simulate', action='store_true', help='Run the code using simulated data')
+    parser.add_argument('--data_name', type=str, default='ratings.feather', help='Observation data after '
+                                                                                 'standardization')
+    parser.add_argument('--lambda_', type=float, default=0.1, help='Lambda as defined in the min-max objective')
     parser.add_argument('--prefix', type=str, default='ml_1m_real')
-    parser.add_argument('--tune_mode', action='store_true')
-    parser.add_argument('--lr', type=float, default=0.01)
+    parser.add_argument('--tune_mode', action='store_true', help='Use validation data as testing data.')
+    parser.add_argument('--lr', type=float, default=0.01, help='Learning rate of SGD optimizer for baseline models')
+    parser.add_argument('--min_lr', type=float, default=0.01, help='Learning rate for maximization step')
+    parser.add_argument('--max_lr', type=float, default=0.01, help='Learning rate for minimization step')
+
     parser.add_argument('--max_len', type=int, default=50, help='Maximum length of sequence')
     parser.add_argument('--num_neg', type=str, default=3, help='Number of random negative samples per real label')
     parser.add_argument('--w_lower_bound', type=float, default=None, help='Lower bound of w(u, i), set it 1 will '

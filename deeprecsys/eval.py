@@ -77,10 +77,10 @@ def unbiased_full_eval(user_num: int, item_num: int,
     candidate_items = list(range(item_num))
     user_top_items: Dict[int, Sequence[int]] = {}
 
-    if not dat_df and not rel_model:
+    if dat_df is None and rel_model is None:
         raise ValueError('Need to input dat_df or rel_model')
 
-    if dat_df:
+    if dat_df is not None:
         users = dat_df.uidx.unique().tolist()
     else:
         users = list(range(user_num))
@@ -96,7 +96,7 @@ def unbiased_full_eval(user_num: int, item_num: int,
         for user, top_items in user_top_items.items():
             _users = [user] * len(top_items)
             rel_score = rel_model.score(_users, list(top_items))
-            rel_score = sigmoid(rel_score)
+            # rel_score = sigmoid(rel_score)
             cum_user_score += rel_score.mean()
     else:
         user_label = {(uidx, iidx): rating for uidx, iidx, rating in zip(dat_df.uidx,
