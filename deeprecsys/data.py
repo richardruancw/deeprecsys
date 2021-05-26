@@ -295,7 +295,7 @@ class NegSequenceData(data.Dataset):
 
 
 class LabeledSequenceData(data.Dataset):
-    def __init__(self, hist: Dict[int, List[Tuple[int, int]]],
+    def __init__(self, hist: Dict[int, List[Tuple[int, float]]],
                 max_len: int,
                 padding_idx: int,
                 item_num: int,
