@@ -78,7 +78,8 @@ def main(args: Namespace):
     logging.info('-------The Popularity model-------')
     pop_model = recommender.PopRecommender(pop_factor)
     logger.info('biased eval for plian popular model on test')
-    unbiased_full_eval(user_num, item_num, pop_model, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model)
+    unbiased_full_eval(user_num, item_num, pop_model, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model,
+                       past_hist=past_hist)
     # unbiased_eval(user_num, item_num, te_df, pop_model, past_hist=past_hist)
 
     logger.info('-------The SVD model---------')
@@ -86,7 +87,8 @@ def main(args: Namespace):
     logger.info(f'model with dimension {args.dim}')
     sv.fit(tr_mat)
     logger.info('biased eval for SVD model on test')
-    unbiased_full_eval(user_num, item_num, sv, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model)
+    unbiased_full_eval(user_num, item_num, sv, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model,
+                       past_hist=past_hist)
     # unbiased_eval(user_num, item_num, te_df, sv, past_hist=past_hist)
     #
     # logger.info('------Regular MF model ------')
@@ -128,7 +130,7 @@ def main(args: Namespace):
              w_lr=args.w_lr, f_lr=args.f_lr, g_lr=args.g_lr,
              f_count=args.f_step, w_count=args.w_step, g_count=args.g_step,
              epoch=args.epoch, topk=args.eval_topk,
-             true_rel_model=rel_model)
+             true_rel_model=rel_model, past_hist=past_hist)
 
 
 if __name__ == '__main__':
