@@ -72,7 +72,8 @@ def unbiased_eval(num_user: int, num_item: int, dat_df: pd.DataFrame,
 def unbiased_full_eval(user_num: int, item_num: int,
                        recom: Recommender, topk: int,
                        dat_df: Optional[pd.DataFrame] = None,
-                       rel_model: Optional[Recommender] = None):
+                       rel_model: Optional[Recommender] = None,
+                       past_hist: Optional[Dict[int, Set[int]]] = None):
     logger = logging.getLogger(__name__)
     candidate_items = list(range(item_num))
     user_top_items: Dict[int, Sequence[int]] = {}
@@ -88,6 +89,10 @@ def unbiased_full_eval(user_num: int, item_num: int,
     for user in users:
         _users = [user] * len(candidate_items)
         scores = recom.score(_users, candidate_items)
+        if past_hist is not None and user in past_hist:
+            # assign very low score to these items previously interacted with
+            past_items = list(past_hist[user])
+            scores[past_items] = np.min(scores) - 1e5
         sorted_idx = np.argsort(scores)[-topk:][::-1]
         user_top_items[user] = sorted_idx
 

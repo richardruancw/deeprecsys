@@ -2,7 +2,7 @@
 import contextlib
 from bisect import bisect
 from enum import Enum
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, Tuple, List, Set
 
 import numpy as np
 import pandas as pd
@@ -318,7 +318,8 @@ class ReWeightLearnerV2:
                  g: torch.nn.Module,
                  item_num: int, user_num: int,
                  lambda_: float = 1,
-                 w_lower_bound: Optional[float] = None) -> None:
+                 w_lower_bound: Optional[float] = None,
+                 ) -> None:
         self.f = f
         self.w = w
         self.g = g
@@ -350,12 +351,16 @@ class ReWeightLearnerV2:
             tr_df: pd.DataFrame,
             test_df: Optional[pd.DataFrame] = None,
             run_path: Optional[str] = None,
-            batch_size: int = 1024, max_len: int = 50,
+            batch_size: int = 1024,
+            max_len: int = 50,
             f_count: int = 1, w_count: int = 1, g_count: int = 1,
             epoch: int = 10,
             f_lr: float = 0.01, w_lr: float = 0.01, g_lr: float = 0.01,
             decay: float = 0, sample_len: int = 100, cut_len: int = 10,
-            cuda: Optional[int] = None, topk: int = 100, true_rel_model: Optional[recommender.Recommender] = None):
+            cuda: Optional[int] = None,
+            topk: int = 100,
+            true_rel_model: Optional[recommender.Recommender] = None,
+            past_hist: Optional[Dict[int, Set[int]]] = None):
 
         if cuda is None:
             device = torch.device('cpu')
@@ -492,5 +497,6 @@ class ReWeightLearnerV2:
 
                 rel_score = unbiased_full_eval(self.user_num, self.item_num, self.recom_model, topk=topk,
                                                dat_df=test_df,
-                                               rel_model=true_rel_model)
+                                               rel_model=true_rel_model,
+                                               past_hist=past_hist)
                 writer.add_scalar(f'full_top_{topk}_relevance', rel_score, current_epoch)
