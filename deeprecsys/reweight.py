@@ -417,8 +417,8 @@ class ReWeightLearnerV2:
 
         cache = {
             OptimizationStep.ARG_MIN_F: {'data': f_data, 'optimizer': f_optimizer},
-            OptimizationStep.ARG_MAX_G: {'data': g_data, 'optimizer': w_optimizer},
-            OptimizationStep.ARG_MIN_W: {'data': w_data, 'optimizer': g_optimizer}
+            OptimizationStep.ARG_MAX_G: {'data': g_data, 'optimizer': g_optimizer},
+            OptimizationStep.ARG_MIN_W: {'data': w_data, 'optimizer': w_optimizer}
         }
 
         counter = LoopCounter([(OptimizationStep.ARG_MIN_F, f_count),
