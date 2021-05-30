@@ -86,7 +86,7 @@ class AlternatingCounter:
 class LoopCounter:
     def __init__(self, loop_specs: List[Tuple[Enum, int]]):
         self._slots = []
-        self._fill_slots(self._slots, loop_specs)
+        self._fill_slots(self._slots, [x for x in loop_specs if x[1] > 0])
 
     def _fill_slots(self, out: List[Enum], candidates: List[Tuple[Enum, int]]):
         if not candidates:
