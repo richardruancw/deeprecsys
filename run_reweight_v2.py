@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 import os
 import time
 import argparse
@@ -8,6 +8,7 @@ import logging
 from scipy import sparse as sp  # type: ignore
 import numpy as np  # type: ignore
 from sklearn.utils.extmath import randomized_svd  # type: ignore
+from torch import nn
 from tqdm import tqdm  # type: ignore
 import pandas as pd  # type: ignore
 from scipy import sparse as sp  # type: ignore
@@ -89,6 +90,7 @@ def main(args: Namespace):
     logger.info('biased eval for SVD model on test')
     unbiased_full_eval(user_num, item_num, sv, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model,
                        past_hist=past_hist)
+
     # unbiased_eval(user_num, item_num, te_df, sv, past_hist=past_hist)
     #
     # logger.info('------Regular MF model ------')
@@ -119,24 +121,57 @@ def main(args: Namespace):
     # #unbiased_eval(user_num, item_num, te_df, mf_recom, past_hist=past_hist)
     # unbiased_full_eval(user_num, item_num, mf_recom, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model)
 
+    def get_model(model_str: str, user_num: int, item_num: int, factor_num, max_len=50, num_layer=2,
+                  shared_module: Optional[nn.Module] = None):
+        logger.info(f'Creating {model_str} model')
+        sharing_warning = 'Only allow sharing embeddings between same module'
+        if model_str == 'mlp':
+            if shared_module is None:
+                return module.MLPRecModel(user_num=user_num, item_num=item_num, factor_num=factor_num)
+            else:
+                if not isinstance(shared_module, module.MLPRecModel):
+                    raise ValueError(sharing_warning)
+                logger.info('Sharing weights from f_model in MLP model')
+                return module.MLPRecModel(user_num=user_num, item_num=item_num, factor_num=factor_num,
+                                          shared_item_embed=shared_module.embed_item,
+                                          shared_user_embed=shared_module.embed_user)
+        elif model_str == 'mf':
+            if shared_module is None:
+                return module.FactorModel(user_num=user_num, item_num=item_num, factor_num=factor_num)
+            else:
+                if not isinstance(shared_module, module.FactorModel):
+                    raise ValueError(sharing_warning)
+                logger.info('Sharing weights from f_model in MF model')
+                return module.FactorModel(user_num=user_num, item_num=item_num, factor_num=factor_num,
+                                          shared_user_embed=shared_module.embed_user,
+                                          shared_user_bias=shared_module.bias_user,
+                                          shared_item_embed=shared_module.embed_item,
+                                          shared_item_bias=shared_module.bias_item)
 
-
+        elif model_str == 'seq':
+            if shared_module is None:
+                return module.AttentionModel(user_num, item_num, factor_num, max_len=max_len)
+            else:
+                if not isinstance(shared_module, module.AttentionModel):
+                    raise ValueError(sharing_warning)
+                logger.info('Sharing weights from f_model in attention model')
+                return module.AttentionModel(user_num, item_num, factor_num, max_len=max_len,
+                                             shared_embedding=shared_module.embed_item)
+        else:
+            raise ValueError(f'model not defined! choices are: {ALLOWED_MODELS}')
 
     logger.info('------Reweight and rebalance model ------')
-    if args.model == 'mf':
-        f_module = module.FactorModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
-        w_module = module.FactorModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
-        g_module = module.FactorModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
-    elif args.model == 'mlp':
-        f_module = module.MLPRecModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
-        w_module = module.MLPRecModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
-        g_module = module.MLPRecModel(user_num=user_num, item_num=item_num, factor_num=args.dim)
-    elif args.model == 'seq':
-        f_module = module.AttentionModel(user_num, item_num, args.dim, max_len=args.max_len)
-        g_module = module.AttentionModel(user_num, item_num, args.dim, max_len=args.max_len)
-        w_module = module.AttentionModel(user_num, item_num, args.dim, max_len=args.max_len)
-    else:
-        raise ValueError(f'model not defined! choices are: {ALLOWED_MODELS}')
+    f_module = get_model(args.model, user_num=user_num, item_num=item_num, factor_num=args.dim, max_len=args.max_len)
+
+    w_model_str = args.model if not args.w_model else args.w_model
+    w_shared = f_module if args.share_f_embed else None
+    w_module = get_model(w_model_str, user_num=user_num, item_num=item_num, factor_num=args.dim, max_len=args.max_len,
+                         shared_module=w_shared)
+
+    g_model_str = args.model if not args.g_model else args.g_model
+    g_shared = f_module if args.share_f_embed else None
+    g_module = get_model(g_model_str, user_num=user_num, item_num=item_num, factor_num=args.dim, max_len=args.max_len,
+                         shared_module=g_shared)
 
     rw_m = reweight.ReWeightLearnerV2(f=f_module, g=g_module, w=w_module,
                                       lambda_=args.lambda_, user_num=user_num, item_num=item_num,
@@ -173,8 +208,10 @@ if __name__ == '__main__':
     parser.add_argument('--num_neg', type=str, default=1, help='Number of random negative samples per real label')
     parser.add_argument('--w_lower_bound', type=float, default=0.01, help='Lower bound of w(u, i), set it 1 will '
                                                                           'disable reweighitng')
-    parser.add_argument('--model', type=str, default='mf', choices=ALLOWED_MODELS, help='Base model used in min-max '
-                                                                                        'training')
+    parser.add_argument('--model', type=str, default='mf', choices=ALLOWED_MODELS, help='Base model used for f')
+    parser.add_argument('--g_model', type=str, default=None, choices=ALLOWED_MODELS, help='Base model used for g')
+    parser.add_argument('--w_model', type=str, default=None, choices=ALLOWED_MODELS, help='Base model used for w')
+    parser.add_argument('--share_f_embed', action='store_true')
     parser.add_argument('--f_step', type=int, default=1)
     parser.add_argument('--g_step', type=int, default=1)
     parser.add_argument('--w_step', type=int, default=1)

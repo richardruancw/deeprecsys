@@ -41,12 +41,31 @@ class PopularModel(nn.Module, SparseModelMixin):
 
 
 class FactorModel(nn.Module, SparseModelMixin):
-    def __init__(self, user_num: int, item_num: int, factor_num: int) -> None:
+    def __init__(self, user_num: int, item_num: int, factor_num: int,
+                 shared_user_embed: Optional[nn.Embedding] = None,
+                 shared_user_bias: Optional[nn.Embedding] = None,
+                 shared_item_embed: Optional[nn.Embedding] = None,
+                 shared_item_bias: Optional[nn.Embedding] = None,) -> None:
         super(FactorModel, self).__init__()
-        self.embed_user = nn.Embedding(user_num, factor_num, sparse=True)
-        self.bias_user = nn.Embedding(user_num, 1, sparse=True)
-        self.embed_item = nn.Embedding(item_num, factor_num, sparse=True)
-        self.bias_item = nn.Embedding(item_num, 1, sparse=True)
+        if shared_user_embed is None:
+            self.embed_user = nn.Embedding(user_num, factor_num, sparse=True)
+        else:
+            self.embed_user = shared_user_embed
+
+        if shared_user_bias is None:
+            self.bias_user = nn.Embedding(user_num, 1, sparse=True)
+        else:
+            self.bias_user = shared_user_bias
+
+        if shared_item_embed is None:
+            self.embed_item = nn.Embedding(item_num, factor_num, sparse=True)
+        else:
+            self.embed_item = shared_item_embed
+
+        if shared_item_bias is None:
+            self.bias_item = nn.Embedding(item_num, 1, sparse=True)
+        else:
+            self.bias_item = shared_item_bias
 
         self.final_layer = nn.Linear(factor_num, 1, bias=True)
         # self.bias_global = nn.Parameter(torch.zeros(1))
@@ -137,13 +156,24 @@ class MLPRecModel(nn.Module, SparseModelMixin):
             user_num: int,
             item_num: int,
             factor_num: int,
-            layers_dim: Optional[List[int]] = None):
+            layers_dim: Optional[List[int]] = None,
+            shared_user_embed: Optional[nn.Embedding] = None,
+            shared_item_embed: Optional[nn.Embedding] = None
+    ):
         super(MLPRecModel, self).__init__()
         if not layers_dim:
             layers_dim = [32,
                           16]
-        self.embed_user = nn.Embedding(user_num, factor_num, sparse=True)
-        self.embed_item = nn.Embedding(item_num, factor_num, sparse=True)
+
+        if shared_user_embed is None:
+            self.embed_user = nn.Embedding(user_num, factor_num, sparse=True)
+        else:
+            self.embed_user = shared_user_embed
+
+        if shared_item_embed is None:
+            self.embed_item = nn.Embedding(item_num, factor_num, sparse=True)
+        else:
+            self.embed_item = shared_item_embed
 
         nn.init.kaiming_normal_(self.embed_user.weight)
         nn.init.kaiming_normal_(self.embed_item.weight)
@@ -296,7 +326,9 @@ class AttentionModel(nn.Module, SeqModelMixin):
             factor_num: int,
             max_len: int = 20,
             num_heads: int = 2,
-            num_layer: int = 2) -> None:
+            num_layer: int = 2,
+            shared_embedding: Optional[nn.Embedding] = None
+    ) -> None:
         super(AttentionModel, self).__init__()
         self.user_num = user_num
         self.item_num = item_num
@@ -304,7 +336,10 @@ class AttentionModel(nn.Module, SeqModelMixin):
         self.padding_idx = self.item_num
         self.max_len = max_len
         # self.embed_user = nn.Embedding(user_num, factor_num, sparse=True)
-        self.embed_item = nn.Embedding(item_num + 1, factor_num, sparse=False, padding_idx=self.padding_idx)
+        if shared_embedding is None:
+            self.embed_item = nn.Embedding(item_num + 1, factor_num, sparse=False, padding_idx=self.padding_idx)
+        else:
+            self.embed_item = shared_embedding
         # self.target_item_embed = nn.Embedding(item_num + 1, factor_num, sparse=False, padding_idx=self.padding_idx)
         self.position_encode = nn.Embedding(max_len, factor_num, sparse=False)
         self.attention_list = nn.ModuleList()

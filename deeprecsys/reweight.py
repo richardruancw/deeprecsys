@@ -333,9 +333,9 @@ class ReWeightLearnerV2:
         elif isinstance(f, SeqModelMixin):
             self.recom_model = recommender.DeepRecommender(user_num, item_num, self.f)
 
-        if isinstance(f, SparseModelMixin):
+        if isinstance(w, SparseModelMixin):
             self.rel_model = recommender.ClassRecommender(user_num, item_num, self.w)
-        elif isinstance(f, SeqModelMixin):
+        elif isinstance(w, SeqModelMixin):
             self.rel_model = recommender.DeepRecommender(user_num, item_num, self.w)
 
     def obj_func(self, f_prob, w_prob, g_score, f_recom_score, labels):
@@ -423,7 +423,7 @@ class ReWeightLearnerV2:
 
         counter = LoopCounter([(OptimizationStep.ARG_MIN_F, f_count),
                                (OptimizationStep.ARG_MIN_W, w_count),
-                               (OptimizationStep.ARG_MAX_G, g_count),])
+                               (OptimizationStep.ARG_MAX_G, g_count), ])
 
         loop_manager = LoopManager(cache)
 
@@ -432,7 +432,6 @@ class ReWeightLearnerV2:
 
         iter_ = 0
         for current_epoch in range(epoch):
-            print(len(f_data))
             for _ in range(len(f_data)):
                 for step in counter:
                     obs = loop_manager.get_data(step)
