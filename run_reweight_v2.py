@@ -95,7 +95,7 @@ def main(args: Namespace):
     # mf_m = module.FactorModel(user_num, item_num, args.dim)
     # mf_recom = recommender.ClassRecommender(user_num, item_num, mf_m)
     # mf_recom.fit(tr_df,
-    #                num_epochs=5,
+    #                num_epochs=10,
     #                cuda=args.cuda_idx,
     #                decay=args.decay,
     #                num_neg=args.num_neg,
@@ -104,6 +104,23 @@ def main(args: Namespace):
     #                lr=args.lr)
     # #unbiased_eval(user_num, item_num, te_df, mf_recom, past_hist=past_hist)
     # unbiased_full_eval(user_num, item_num, mf_recom, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model)
+    #
+    # logger.info('------Attention model ------')
+    # mf_m = module.AttentionModel(user_num, item_num, args.dim, max_len=args.max_len)
+    # mf_recom = recommender.DeepRecommender(user_num, item_num, mf_m)
+    # mf_recom.fit(tr_df,
+    #                num_epochs=20,
+    #                cuda=args.cuda_idx,
+    #                decay=args.decay,
+    #                num_neg=args.num_neg,
+    #                batch_size=args.batch_size,
+    #                past_hist=past_hist,
+    #                lr=args.lr)
+    # #unbiased_eval(user_num, item_num, te_df, mf_recom, past_hist=past_hist)
+    # unbiased_full_eval(user_num, item_num, mf_recom, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model)
+
+
+
 
     logger.info('------Reweight and rebalance model ------')
     if args.model == 'mf':
@@ -160,7 +177,7 @@ if __name__ == '__main__':
                                                                                         'training')
     parser.add_argument('--f_step', type=int, default=1)
     parser.add_argument('--g_step', type=int, default=1)
-    parser.add_argument('--w_step', type=int, default=2)
+    parser.add_argument('--w_step', type=int, default=1)
     parser.add_argument('--eval_topk', type=int, default=100, help='top k items in full evaluations')
 
     args = parser.parse_args()

@@ -48,7 +48,7 @@ def test_counter_single_2():
 
 
 def test_loop_counter():
-    spec = [(reweight.OptimizationStep.ARG_MIN, 2), (reweight.OptimizationStep.ARG_MAX, 3)]
+    spec = [(reweight.OptimizationStep.ARG_MIN, 2), (reweight.OptimizationStep.ARG_MAX, 2)]
     counter = LoopCounter(spec)
     output = []
     for x in counter:
@@ -60,6 +60,8 @@ def test_loop_counter():
               reweight.OptimizationStep.ARG_MAX,
               reweight.OptimizationStep.ARG_MAX
               ]
+    print(output)
+    assert output == expect
 
 
 def test_loop_counter_2():
@@ -80,5 +82,32 @@ def test_loop_counter_2():
               reweight.OptimizationStep.ARG_MAX_G,
               reweight.OptimizationStep.ARG_MAX_G
               ]
+    assert output == expect
 
 
+def test_loop_counter_3():
+    spec = [(reweight.OptimizationStep.ARG_MIN_F, 1),
+            (reweight.OptimizationStep.ARG_MIN_W, 0),
+            (reweight.OptimizationStep.ARG_MAX_G, 0)]
+    counter = LoopCounter(spec)
+    output = []
+    for x in counter:
+        output.append(x)
+    expect = [reweight.OptimizationStep.ARG_MIN_F
+              ]
+    assert output == expect
+
+
+def test_loop_counter_4():
+    spec = [(reweight.OptimizationStep.ARG_MIN_F, 1),
+            (reweight.OptimizationStep.ARG_MIN_W, 0),
+            (reweight.OptimizationStep.ARG_MAX_G, 2)]
+    counter = LoopCounter(spec)
+    output = []
+    for x in counter:
+        output.append(x)
+    expect = [reweight.OptimizationStep.ARG_MIN_F,
+              reweight.OptimizationStep.ARG_MAX_G,
+              reweight.OptimizationStep.ARG_MAX_G
+              ]
+    assert output == expect
