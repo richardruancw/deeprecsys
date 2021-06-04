@@ -67,7 +67,7 @@ for i in range(f_step):
             update(g)
 ```
 
-* `f_model`, `w_model`, and `g_model`: The functional class for each model. Available function class includes
+* `model`, `w_model`, and `g_model`: The functional class for f, w and g respectively. Available function class includes
 `{mf,mlp,seq}`
   
 * `f_lr`, `w_lr`, and `g_lr`: Learning rate for each module.
