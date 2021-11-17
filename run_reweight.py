@@ -79,6 +79,8 @@ def main(args: Namespace):
     logging.info('-------The Popularity model-------')
     pop_model = recommender.PopRecommender(pop_factor)
     logger.info('biased eval for plian popular model on test')
+    unbiased_eval(user_num, item_num, te_df, pop_model, rel_model=rel_model,
+                       past_hist=past_hist)
     unbiased_full_eval(user_num, item_num, pop_model, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model,
                        past_hist=past_hist)
     # unbiased_eval(user_num, item_num, te_df, pop_model, past_hist=past_hist)
@@ -88,6 +90,8 @@ def main(args: Namespace):
     logger.info(f'model with dimension {args.dim}')
     sv.fit(tr_mat)
     logger.info('biased eval for SVD model on test')
+    unbiased_eval(user_num, item_num, te_df, sv, rel_model=rel_model,
+                  past_hist=past_hist)
     unbiased_full_eval(user_num, item_num, sv, topk=args.eval_topk, dat_df=te_df, rel_model=rel_model,
                        past_hist=past_hist)
 
@@ -173,11 +177,11 @@ def main(args: Namespace):
     g_module = get_model(g_model_str, user_num=user_num, item_num=item_num, factor_num=args.dim, max_len=args.max_len,
                          shared_module=g_shared)
 
-    rw_m = reweight.ReWeightLearnerV2(f=f_module, g=g_module, w=w_module,
+    rw_m = reweight.ReWeightLearnerV3(f=f_module, g=g_module, w=w_module,
                                       lambda_=args.lambda_, user_num=user_num, item_num=item_num,
                                       w_lower_bound=args.w_lower_bound)
 
-    rw_m.fit(tr_df=tr_df, test_df=te_df,
+    rw_m.fit(tr_df=tr_df, val_df=te_df, fast_train=True,
              decay=args.decay, max_len=args.max_len, cuda=args.cuda_idx,
              w_lr=args.w_lr, f_lr=args.f_lr, g_lr=args.g_lr,
              f_count=args.f_step, w_count=args.w_step, g_count=args.g_step,

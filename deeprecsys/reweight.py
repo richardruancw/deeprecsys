@@ -499,3 +499,250 @@ class ReWeightLearnerV2:
                                                rel_model=true_rel_model,
                                                past_hist=past_hist)
                 writer.add_scalar(f'full_top_{topk}_relevance', rel_score, current_epoch)
+
+
+class ReWeightLearnerV3:
+    def __init__(self, f: torch.nn.Module,
+                 w: torch.nn.Module,
+                 g: torch.nn.Module,
+                 item_num: int, user_num: int,
+                 lambda_: float = 1,
+                 w_lower_bound: Optional[float] = None,
+                 ) -> None:
+        self.f = f
+        self.w = w
+        self.g = g
+        self.item_num = item_num
+        self.user_num = user_num
+        self.w_lower_bound = w_lower_bound
+        self.lambda_ = lambda_
+        self.sigmoid = torch.nn.Sigmoid()
+
+        if isinstance(f, SparseModelMixin):
+            self.recom_model = recommender.ClassRecommender(user_num, item_num, self.f)
+        elif isinstance(f, SeqModelMixin):
+            self.recom_model = recommender.DeepRecommender(user_num, item_num, self.f)
+
+        if isinstance(w, SparseModelMixin):
+            self.rel_model = recommender.ClassRecommender(user_num, item_num, self.w)
+        elif isinstance(w, SeqModelMixin):
+            self.rel_model = recommender.DeepRecommender(user_num, item_num, self.w)
+
+    def act_func(self, x):
+        return torch.sigmoid(torch.clamp(x, min=-8, max=8))
+
+    def obj_func(self, f_prob, w_prob, g_score, f_recom_score, labels, mask=0):
+        # use mask to determine if the logloss will be counted when updating w
+
+        assert mask in [0, 1]
+        logloss = self.logloss(f_prob, w_prob, labels)
+        diff = g_score * f_recom_score * torch.log(w_prob)
+        obj = mask * logloss + self.lambda_ * diff
+        return obj, logloss, diff
+
+    def logloss(self, f_prob, w_prob, labels):
+        logloss = -1 * (labels * torch.log(f_prob) +
+                        (1 - labels) * torch.log(1 - f_prob)) * w_prob
+        return logloss
+
+    def fit(self,
+            tr_df: pd.DataFrame,
+            val_df: Optional[pd.DataFrame] = None,
+            run_path: Optional[str] = None,
+            batch_size: int = 1024,
+            max_len: int = 50,
+            f_count: int = 1, w_count: int = 1, g_count: int = 1,
+            epoch: int = 10,
+            f_lr: float = 0.01, w_lr: float = 0.01, g_lr: float = 0.01,
+            decay: float = 0, sample_len: int = 100, cut_len: int = 10,
+            fast_train: Optional[bool] = False,
+            cuda: Optional[int] = None,
+            topk: int = 100,
+            true_rel_model: Optional[recommender.Recommender] = None,
+            past_hist: Optional[Dict[int, Set[int]]] = None,
+            labeled_hist=None):
+
+        if run_path:
+            writer = SummaryWriter(log_dir=run_path)
+        else:
+            writer = None
+
+        if cuda is None:
+            device = torch.device('cpu')
+        else:
+            device = torch.device(f'cuda:{cuda}')
+
+        self.f = self.f.to(device)
+        self.g = self.g.to(device)
+        self.w = self.w.to(device)
+
+        max_len = max_len if isinstance(self.f, SeqModelMixin) else 1
+        allow_empty = isinstance(self.f, SparseModelMixin)
+
+        past_hist = tr_df.groupby('uidx').apply(lambda x: set(x.iidx)).to_dict()
+
+        if isinstance(self.recom_model, recommender.DeepRecommender):
+            hist = tr_df.groupby('uidx').apply(
+                lambda x: list(zip(x.ts, x.iidx))).to_dict()
+            for k in hist.keys():
+                hist[k] = [x[1] for x in sorted(hist[k])]
+            self.recom_model.set_user_record(hist)
+
+        item_cnt_dict = tr_df.groupby('iidx').count().uidx.to_dict()
+        item_cnt = np.array([item_cnt_dict.get(iidx, 0) for iidx in range(self.item_num)])
+        labeled_hist = tr_df.groupby('uidx').apply(
+            lambda x: list(zip(x.ts, x.iidx, x.rating))).to_dict()
+        for k in labeled_hist.keys():
+            labeled_hist[k] = [(x[1], x[2]) for x in sorted(labeled_hist[k])]
+
+        def get_data_loader():
+            label_dataset = LabeledSequenceData(labeled_hist,
+                                                max_len=max_len,
+                                                window=True,
+                                                padding_idx=self.item_num,
+                                                past_hist=past_hist,
+                                                item_num=self.item_num,
+                                                allow_empty=allow_empty)
+            data_loader = torch.utils.data.DataLoader(
+                label_dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=1,
+                pin_memory=True)
+            return data_loader
+
+        f_optimizer = recommender.build_optimizer(f_lr, self.f)
+        w_optimizer = recommender.build_optimizer(w_lr, self.w)
+        g_optimizer = recommender.build_optimizer(g_lr, self.g)
+
+        f_data = get_data_loader()
+        g_data = get_data_loader()
+        w_data = get_data_loader()
+
+        cache = {
+            OptimizationStep.ARG_MIN: {'data': f_data},
+            OptimizationStep.ARG_MAX: {'data': w_data}
+        }
+
+        counter = LoopCounter([(OptimizationStep.ARG_MIN, f_count),
+                               (OptimizationStep.ARG_MAX, w_count), ])
+
+        loop_manager = LoopManager(cache)
+
+        iter_ = 0
+        print('start training')
+
+        for current_epoch in range(epoch):
+            for batch_id in range(len(f_data)):
+                # obs = loop_manager.get_data(OptimizationStep.ARG_MIN_F)
+                for step in counter:
+                    obs = loop_manager.get_data(step)
+
+                    user, item_idx, labels, user_hist = list2deivce(obs, device=device)
+
+                    user = user.unsqueeze(-1)
+                    item_idx = item_idx.unsqueeze(-1)
+                    labels = labels.unsqueeze(-1)
+                    # item_idx: [B]
+                    bsz = user.shape[0]
+                    #  Probability threshold to approximate the quantile function using 100 random negative examples
+                    negative_samples = torch.randint(0, self.item_num, size=(sample_len,), device=device)
+                    user_ext = user.repeat(1, sample_len)  # [B, sample_len]
+                    negative_samples = negative_samples.repeat(bsz).view(bsz, -1)  # [B, sample_len]
+                    recom_score = conditional_forward(user_ext, negative_samples, user_hist, self.f,
+                                                      inference=True)  # [B, sample_len]
+                    sorted_score, _ = torch.sort(recom_score, descending=True)
+                    threshold_prob = self.act_func(sorted_score[:, cut_len])  # [B]
+
+                    # use inference (no_grad + eval) mode if current step does not optimize it.
+                    if step == OptimizationStep.ARG_MAX:  # update w
+                        w_optimizer.zero_grad()
+                        w_prob = self.act_func(conditional_forward(user, item_idx, user_hist, self.w,
+                                                                   inference=False))
+                        if self.w_lower_bound:
+                            w_prob = torch.clamp(w_prob, min=self.w_lower_bound)
+
+                        if fast_train:  # set g_score to -1 for fast training
+                            g_score = torch.ones_like(w_prob) * -1
+                        else:
+                            g_score = torch.tanh(
+                                conditional_forward(user, item_idx, user_hist, self.g, inference=True))
+
+                        f_prob = self.act_func(conditional_forward(user, item_idx, user_hist, self.f,
+                                                                   inference=True))
+                        f_recom = (f_prob > threshold_prob).float()
+                        obj, logloss, diff = self.obj_func(f_prob, w_prob, g_score, f_recom, labels)
+                        loss = obj.mean()
+
+                        # apply l2 penalty for sparse model only
+                        l2 = aggregate_l2(user, item_idx, self.w) * decay
+                        loss += l2
+                        loss.backward()
+                        w_optimizer.step()
+
+                    if step == OptimizationStep.ARG_MAX and not fast_train:  # update g
+                        g_optimizer.zero_grad()
+                        g_score_raw = conditional_forward(user, item_idx, user_hist, self.g, inference=False)
+                        g_score = torch.tanh(g_score_raw)
+
+                        w_prob = self.act_func(conditional_forward(user, item_idx, user_hist, self.w,
+                                                                   inference=True))
+                        if self.w_lower_bound:
+                            w_prob = torch.clamp(w_prob, min=self.w_lower_bound)
+
+                        f_prob = self.act_func(conditional_forward(user, item_idx, user_hist, self.f,
+                                                                   inference=True))
+                        f_recom = (f_prob > threshold_prob).float()
+                        obj, logloss, diff = self.obj_func(f_prob, w_prob, g_score, f_recom, labels)
+                        loss = -1 * obj.mean()
+
+                        # apply l2 penalty for sparse model only
+                        l2 = aggregate_l2(user, item_idx, self.g) * decay
+                        loss += l2
+                        loss.backward()
+                        g_optimizer.step()
+
+                    if step == OptimizationStep.ARG_MIN:  # update f
+                        f_optimizer.zero_grad()
+                        w_prob = self.act_func(conditional_forward(user, item_idx, user_hist, self.w,
+                                                                   inference=True))
+                        if self.w_lower_bound:
+                            w_prob = torch.clamp(w_prob, min=self.w_lower_bound)
+
+                        f_prob = self.act_func(conditional_forward(user, item_idx, user_hist, self.f,
+                                                                   inference=False))
+                        logloss = self.logloss(f_prob, w_prob, labels)
+                        loss = logloss.mean()
+
+                        l2 = aggregate_l2(user, item_idx, self.f) * decay
+                        loss += l2
+                        loss.backward()
+                        f_optimizer.step()
+
+                    if writer:
+                        writer.add_scalar('Objective/train', obj.mean().item(), iter_)
+                        writer.add_scalar('Logloss/train', logloss.mean().item(), iter_)
+                        writer.add_scalar('Diff/train', diff.mean().item(), iter_)
+                        writer.add_scalar('L2/train', l2, iter_)
+
+                    # Alternate between minimization and maximization.
+                    iter_ += 1
+
+            if val_df is not None:
+                self.f.eval()
+                rest = unbiased_eval(self.user_num, self.item_num, val_df, self.recom_model,
+                                     rel_model=None,
+                                     expo_model=None,
+                                     past_hist=past_hist)
+                #
+                # writer.add_scalar(f'Recall@{cut_len}/test', rest['recall'], current_epoch)
+                # writer.add_scalar(f'NDCG@{cut_len}/test', rest['ndcg'], current_epoch)
+
+                rel_score = unbiased_full_eval(self.user_num, self.item_num, self.recom_model, topk=topk,
+                                               dat_df=val_df,
+                                               rel_model=true_rel_model,
+                                               past_hist=None)
+                # writer.add_scalar(f'full_top_{topk}_relevance', rel_score, current_epoch)
+                # val_rec.append([rest['recall'], rest['ndcg'], rel_score])
+                print('epoch:{}, recall:{}, ndcg:{}, rel:{}'.format(current_epoch, rest['recall'], rest['ndcg'],
+                                                                    rel_score))
