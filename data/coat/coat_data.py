@@ -1,3 +1,5 @@
+"""Firstly download data from https://www.cs.cornell.edu/~schnabts/mnar/ """
+
 import numpy as np
 import pandas as pd
 
@@ -27,12 +29,19 @@ train_rating = load_ratings('coat_data/train.ascii')
 test_rating = load_ratings('coat_data/test.ascii')
 
 tr_df = extract(train_rating.data)
-te_df = extract(test_rating.data)
+sample_ind = np.random.random(size=tr_df.shape[0]) < 0.8
+validation_df = tr_df[~sample_ind]
+train_df = tr_df[sample_ind]
 
-tr_df.to_feather('./coat_data/train.feather')
-te_df.to_feather('./coat_data/val.feather')
-te_df.to_feather('./coat_data/test.feather')
+test_df = extract(test_rating.data)
 
-df = pd.concat([tr_df, te_df])
+train_df = train_df.reset_index(drop=True)
+train_df.to_feather('./coat_data/train.feather')
+
+validation_df = validation_df.reset_index(drop=True)
+validation_df.to_feather('./coat_data/val.feather')
+test_df.to_feather('./coat_data/test.feather')
+
+df = pd.concat([tr_df, test_df])
 df = df.reset_index(drop=True)
 df.to_feather('./coat_data/ratings.feather')
